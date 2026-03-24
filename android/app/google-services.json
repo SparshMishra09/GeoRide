@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "897110757225",
+    "project_id": "georide-7076c",
+    "storage_bucket": "georide-7076c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:897110757225:android:8a0d207a2cc30d9a4fb7f8",
+        "android_client_info": {
+          "package_name": "com.example.georide"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4E8y4NmWYoknpJnKihaJofaiB6XzJ-9g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
