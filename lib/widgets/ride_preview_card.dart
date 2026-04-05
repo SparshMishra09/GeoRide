@@ -99,7 +99,15 @@ class _RidePreviewCardState extends State<RidePreviewCard> {
       case 'already_in_ride':
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('You are already in another ride.'),
+            content: Text('You are already in another ride. Leave it first.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        break;
+      case 'already_hosting':
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You are already hosting a ride. Cancel it first.'),
             backgroundColor: Colors.orange,
           ),
         );

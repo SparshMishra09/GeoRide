@@ -135,6 +135,21 @@ class SharingService {
       return 'already_joined';
     }
 
+    // Check if user is already hosting another active ride
+    try {
+      final hostedRides = await _firestore.collection('sharing_points')
+          .where('creatorId', isEqualTo: userId)
+          .where('status', whereIn: ['active', 'ongoing'])
+          .get();
+
+      if (hostedRides.docs.isNotEmpty) {
+        debugPrint('❌ User is already hosting a ride');
+        return 'already_hosting';
+      }
+    } catch (e) {
+      debugPrint('Error checking hosted rides: $e');
+    }
+
     // Check if user is already a passenger in another active ride
     try {
       final existingRides = await _firestore.collection('sharing_points')

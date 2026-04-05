@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(flutter *)"
+      "Bash(flutter *)",
+      "WebSearch",
+      "WebFetch(stackoverflow.com)"
     ]
-  }
+  },
+  "$version": 3
 }

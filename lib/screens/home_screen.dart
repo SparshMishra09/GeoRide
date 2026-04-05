@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -8,7 +9,7 @@ import '../services/location_service.dart';
 import '../services/sharing_service.dart';
 import '../models/sharing_point.dart';
 import '../widgets/avatar_marker.dart';
-import '../widgets/sharing_marker.dart';
+import '../widgets/portal_marker.dart';
 import '../widgets/ride_preview_card.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -30,9 +31,14 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _isMapReady = false;
   bool _is3DMode = true;
 
+  // Zoom tracking for counter-scaling avatar
+  double _currentZoom = 16.0;
+  static const double _baseZoom = 16.0;
+
+  // Ride tracking
   List<SharingPoint> _allActiveRides = [];
-  SharingPoint? _hostedRide; // Ride I created
-  SharingPoint? _joinedRide; // Ride I joined as passenger
+  SharingPoint? _hostedRide;
+  SharingPoint? _joinedRide;
 
   @override
   void initState() {
@@ -51,14 +57,12 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       setState(() {
         _allActiveRides = rides;
 
-        // Find ride I created
         try {
           _hostedRide = rides.firstWhere((r) => r.creatorId == userId);
         } catch (_) {
           _hostedRide = null;
         }
 
-        // Find ride I joined
         try {
           _joinedRide = rides.firstWhere((r) => r.passengers.contains(userId));
         } catch (_) {
@@ -74,16 +78,19 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       Position initialPosition = await Geolocator.getCurrentPosition();
       setState(() {
         _currentPosition = initialPosition;
+        _currentZoom = _is3DMode ? 16.0 : 18.0;
       });
 
       _positionStream = LocationService.getLocationStream().listen((Position position) {
         setState(() {
           _currentPosition = position;
         });
+
+        // Always keep map centered on player
         if (_isMapReady) {
           _mapController.move(
             LatLng(position.latitude, position.longitude),
-            _mapController.camera.zoom,
+            _currentZoom,
           );
         }
       });
@@ -91,10 +98,9 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _startExpiryTimer() {
-    // Check for expired rides every 30 seconds
     _expiryTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       _sharingService.expireOldRides();
-      setState(() {}); // Refresh UI
+      setState(() {});
     });
   }
 
@@ -107,20 +113,40 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  /// Counter-scale factor: keeps avatar at medium size.
+  /// Upper clamp prevents growth when zooming out.
+  double get _avatarScaleFactor {
+    final currentZoom = _isMapReady ? _mapController.camera.zoom : _currentZoom;
+    final zoomDiff = _baseZoom - currentZoom;
+    double scale = math.pow(1.3, zoomDiff).toDouble();
+    // Upper limit = 0.85 (never grows beyond medium)
+    // Lower limit = 0.5 (doesn't shrink too small)
+    return scale.clamp(0.5, 0.85);
+  }
+
+  void _snapBackToPlayer() {
+    if (_currentPosition == null || !_isMapReady) return;
+    _mapController.move(
+      LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+      _currentZoom,
+    );
+  }
+
+  void _navigateToRideLocation(SharingPoint ride) {
+    _mapController.move(
+      LatLng(ride.lat, ride.lng),
+      _is3DMode ? 17.0 : 19.0,
+    );
+  }
+
   List<SharingPoint> _getNearbyRides() {
     if (_currentPosition == null) return [];
 
     return _allActiveRides.where((ride) {
-      // Skip expired rides
       if (ride.isExpired) return false;
-
-      // Skip full rides
       if (ride.seatsAvailable <= 0) return false;
-
-      // Skip rides older than 30 minutes
       if (DateTime.now().difference(ride.createdAt).inMinutes > 30) return false;
 
-      // Calculate distance
       double distance = Geolocator.distanceBetween(
         _currentPosition!.latitude,
         _currentPosition!.longitude,
@@ -128,7 +154,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ride.lng,
       );
 
-      // Only show rides within 5km
       return distance <= 5000;
     }).toList();
   }
@@ -143,9 +168,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       builder: (context) => RidePreviewCard(
         ride: point,
         userPosition: _currentPosition!,
-        onJoin: () {
-          // UI updates automatically via stream
-        },
+        onJoin: () {},
       ),
     );
   }
@@ -163,7 +186,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       return;
     }
 
-    // Check if user already has an active hosted ride
     if (_hostedRide != null && !_hostedRide!.isExpired) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -174,7 +196,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       return;
     }
 
-    // Check if user is already in a ride as passenger
     if (_joinedRide != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -224,21 +245,21 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     IconButton(
                       icon: const Icon(Icons.remove, color: Colors.greenAccent),
                       onPressed: () {
-                        if (seats > 1) {
-                          setDialogState(() => seats--);
-                        }
+                        if (seats > 1) setDialogState(() => seats--);
                       },
                     ),
                     Text(
                       '$seats',
-                      style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     IconButton(
                       icon: const Icon(Icons.add, color: Colors.greenAccent),
                       onPressed: () {
-                        if (seats < 6) {
-                          setDialogState(() => seats++);
-                        }
+                        if (seats < 6) setDialogState(() => seats++);
                       },
                     ),
                   ],
@@ -308,13 +329,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _navigateToRideLocation(SharingPoint ride) {
-    _mapController.move(
-      LatLng(ride.lat, ride.lng),
-      _is3DMode ? 17.0 : 19.0,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_currentPosition == null) {
@@ -339,8 +353,12 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final userId = FirebaseAuth.instance.currentUser?.uid;
     final nearbyRides = _getNearbyRides();
     final isInAnyRide = _joinedRide != null || _hostedRide != null;
+    final playerLatLng = LatLng(
+      _currentPosition!.latitude,
+      _currentPosition!.longitude,
+    );
 
-    // Build ride markers (only for nearby active rides)
+    // Build ride markers (NO avatar marker here — it's a screen overlay)
     List<Marker> rideMarkers = nearbyRides.map((ride) {
       final isMyRide = ride.creatorId == userId;
       final isMarkerVisible = isMyRide || ride.seatsAvailable > 0;
@@ -356,22 +374,13 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
       return Marker(
         point: LatLng(ride.lat, ride.lng),
-        width: _is3DMode ? 45.0 : 60.0,
-        height: _is3DMode ? 45.0 : 60.0,
+        width: _is3DMode ? 65.0 : 90.0,
+        height: _is3DMode ? 65.0 : 90.0,
         alignment: Alignment.center,
-        child: TweenAnimationBuilder<double>(
-          tween: Tween<double>(begin: 0.8, end: 1.15),
-          duration: const Duration(milliseconds: 1200),
-          curve: Curves.easeInOut,
-          builder: (context, scale, child) {
-            return Transform.scale(
-              scale: scale,
-              child: SharingMarker(
-                size: _is3DMode ? 45.0 : 60.0,
-                onTap: () => _showRidePreview(ride),
-              ),
-            );
-          },
+        child: PortalMarker(
+          size: _is3DMode ? 65.0 : 90.0,
+          isActive: ride.seatsAvailable > 0,
+          onTap: () => _showRidePreview(ride),
         ),
       );
     }).toList();
@@ -395,15 +404,26 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               child: FlutterMap(
                 mapController: _mapController,
                 options: MapOptions(
-                  initialCenter: LatLng(
-                    _currentPosition!.latitude,
-                    _currentPosition!.longitude,
-                  ),
+                  initialCenter: playerLatLng,
                   initialZoom: _is3DMode ? 16.0 : 18.0,
-                  maxZoom: 22.0,
+                  minZoom: 15.0,
+                  maxZoom: 19.0,
+                  keepAlive: true,
                   onMapReady: () {
                     _isMapReady = true;
+                    _mapController.move(playerLatLng, _currentZoom);
                   },
+                  onPositionChanged: (position, hasGesture) {
+                    // Just update zoom tracking — no move() here to avoid feedback loop
+                    if (position.zoom != null) {
+                      _currentZoom = position.zoom!;
+                    }
+                    // Rebuild to update counter-scale
+                    setState(() {});
+                  },
+                  interactionOptions: InteractionOptions(
+                    flags: InteractiveFlag.pinchZoom | InteractiveFlag.rotate,
+                  ),
                 ),
                 children: [
                   TileLayer(
@@ -415,23 +435,18 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   MarkerLayer(
                     markers: [
                       ...rideMarkers,
-                      // User avatar marker
+                      // User avatar marker with counter-scaling and mode-based sizing
                       Marker(
                         point: LatLng(
                           _currentPosition!.latitude,
                           _currentPosition!.longitude,
                         ),
-                        width: _is3DMode ? 30.0 : 70.0,
-                        height: _is3DMode ? 30.0 : 70.0,
+                        width: _is3DMode ? 50.0 : 140.0,
+                        height: _is3DMode ? 50.0 : 140.0,
                         alignment: Alignment.center,
-                        child: Transform(
-                          alignment: FractionalOffset.center,
-                          transform: _is3DMode
-                              ? (Matrix4.identity()..rotateX(0.65))
-                              : Matrix4.identity(),
-                          child: AvatarMarker(
-                            size: _is3DMode ? 30.0 : 70.0,
-                          ),
+                        child: Transform.scale(
+                          scale: _avatarScaleFactor,
+                          child: AvatarMarker(size: _is3DMode ? 50.0 : 140.0),
                         ),
                       ),
                     ],
@@ -441,7 +456,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // TOP HUD - Ride Status
+          // TOP HUD
           Positioned(
             top: 50,
             left: 20,
@@ -449,7 +464,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             child: _buildHud(userId),
           ),
 
-          // BOTTOM - Ride Details Panel (when in a ride)
+          // BOTTOM ride panels
           if (_joinedRide != null) _buildPassengerRidePanel(),
           if (_hostedRide != null && !_hostedRide!.isExpired) _buildHostRidePanel(),
         ],
@@ -461,7 +476,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            // Host Ride Button (only if not in any ride)
+            // Host Ride Button
             if (!isInAnyRide)
               FloatingActionButton.extended(
                 heroTag: "hostRideBtn",
@@ -488,6 +503,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     setState(() {
                       _is3DMode = !_is3DMode;
                     });
+                    _snapBackToPlayer();
                     if (_currentPosition != null) {
                       _mapController.move(
                         LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
@@ -501,18 +517,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
                 const SizedBox(height: 10),
-                // My Location Button
+                // Recenter Button
                 FloatingActionButton(
                   heroTag: "myLocationBtn",
                   backgroundColor: Colors.greenAccent,
-                  onPressed: () {
-                    if (_currentPosition != null) {
-                      _mapController.move(
-                        LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-                        _is3DMode ? 16.0 : 18.0,
-                      );
-                    }
-                  },
+                  onPressed: _snapBackToPlayer,
                   child: const Icon(Icons.my_location, color: Colors.black),
                 ),
               ],
@@ -524,7 +533,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildHud(String? userId) {
-    // If hosting
     if (_hostedRide != null && !_hostedRide!.isExpired) {
       return Container(
         padding: const EdgeInsets.all(15),
@@ -552,7 +560,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             const SizedBox(height: 8),
             Text(
               'To: ${_hostedRide!.destination}',
-              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 4),
             Text(
@@ -573,7 +585,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       );
     }
 
-    // If riding as passenger
     if (_joinedRide != null) {
       final distanceToHost = Geolocator.distanceBetween(
         _currentPosition!.latitude,
@@ -608,12 +619,20 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             const SizedBox(height: 8),
             Text(
               'To: ${_joinedRide!.destination}',
-              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 4),
             Text(
               'Distance to Host: ${SharingService.formatDistance(distanceToHost)}',
-              style: const TextStyle(color: Colors.greenAccent, fontSize: 14, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.greenAccent,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 4),
             const Text(
@@ -625,7 +644,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       );
     }
 
-    // Default - Scanner Active
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -640,7 +658,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           SizedBox(width: 10),
           Text(
             'GeoRide Scanner Active',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
           ),
         ],
       ),
@@ -694,7 +716,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 Expanded(
                   child: Text(
                     'Host Location',
-                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
                 Container(
@@ -705,7 +731,10 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                   child: Text(
                     SharingService.formatDistance(distanceToHost),
-                    style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      color: Colors.green,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -820,7 +849,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             const SizedBox(height: 12),
             Text(
               'To: ${ride.destination}',
-              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 8),
             Row(
