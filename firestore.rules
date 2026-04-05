@@ -11,7 +11,7 @@ service cloud.firestore {
       // Allow creating a sharing point if user is signed in
       allow create: if request.auth != null;
       
-      // Allow updates (joining, marking near, updating seats)
+      // Allow updates (joining, leaving, cancelling, updating seats)
       allow update: if request.auth != null;
       
       // Only the host can delete their sharing point
