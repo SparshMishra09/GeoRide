@@ -3,7 +3,8 @@
     "allow": [
       "Bash(flutter *)",
       "WebSearch",
-      "WebFetch(stackoverflow.com)"
+      "WebFetch(stackoverflow.com)",
+      "WebFetch(dev.to)"
     ]
   },
   "$version": 3

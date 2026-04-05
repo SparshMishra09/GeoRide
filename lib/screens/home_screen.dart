@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/location_service.dart';
 import '../services/sharing_service.dart';
+import '../services/route_service.dart';
 import '../models/sharing_point.dart';
 import '../widgets/avatar_marker.dart';
 import '../widgets/portal_marker.dart';
@@ -35,6 +36,12 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   double _currentZoom = 16.0;
   static const double _baseZoom = 16.0;
 
+  // Route/path tracking (for passengers navigating to host)
+  List<LatLng> _routePoints = [];
+  bool _isFetchingRoute = false;
+  Timer? _routeRefreshTimer;
+  Position? _lastRoutePosition; // Track when we last fetched to avoid spam
+
   // Ride tracking
   List<SharingPoint> _allActiveRides = [];
   SharingPoint? _hostedRide;
@@ -46,6 +53,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initLocation();
     _initRidesStream();
     _startExpiryTimer();
+    _startRouteRefresh();
   }
 
   void _initRidesStream() {
@@ -69,6 +77,56 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           _joinedRide = null;
         }
       });
+
+      // Fetch route when user joins a ride
+      if (_joinedRide != null && _currentPosition != null) {
+        _fetchRoute();
+      }
+    });
+  }
+
+  /// Fetches the route from current position to the joined ride's location.
+  Future<void> _fetchRoute() async {
+    if (_joinedRide == null || _currentPosition == null || _isFetchingRoute) return;
+
+    setState(() => _isFetchingRoute = true);
+
+    final route = await RouteService.fetchRoute(
+      startLat: _currentPosition!.latitude,
+      startLng: _currentPosition!.longitude,
+      endLat: _joinedRide!.lat,
+      endLng: _joinedRide!.lng,
+    );
+
+    if (mounted) {
+      setState(() {
+        _routePoints = route;
+        _isFetchingRoute = false;
+        _lastRoutePosition = _currentPosition;
+      });
+    }
+  }
+
+  /// Starts periodic route refresh for the passenger.
+  void _startRouteRefresh() {
+    _routeRefreshTimer?.cancel();
+    _routeRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_joinedRide != null && _currentPosition != null && mounted) {
+        // Only refetch if user has moved significantly (>50m)
+        if (_lastRoutePosition != null) {
+          final moved = RouteService.straightLineDistance(
+            _lastRoutePosition!.latitude,
+            _lastRoutePosition!.longitude,
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+          );
+          if (moved > 50) {
+            _fetchRoute();
+          }
+        } else {
+          _fetchRoute();
+        }
+      }
     });
   }
 
@@ -109,6 +167,7 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _positionStream?.cancel();
     _ridesSubscription?.cancel();
     _expiryTimer?.cancel();
+    _routeRefreshTimer?.cancel();
     _mapController.dispose();
     super.dispose();
   }
@@ -449,8 +508,50 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           child: AvatarMarker(size: _is3DMode ? 50.0 : 140.0),
                         ),
                       ),
+                      // Destination marker at host's location (for passengers)
+                      if (_joinedRide != null)
+                        Marker(
+                          point: LatLng(_joinedRide!.lat, _joinedRide!.lng),
+                          width: 40.0,
+                          height: 40.0,
+                          alignment: Alignment.center,
+                          child: Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.greenAccent.withOpacity(0.3),
+                              border: Border.all(color: Colors.greenAccent, width: 3),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.greenAccent.withOpacity(0.5),
+                                  blurRadius: 15,
+                                  spreadRadius: 5,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.flag,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
+                  // Route polyline (only visible when passenger has joined a ride)
+                  if (_joinedRide != null && _routePoints.isNotEmpty)
+                    PolylineLayer(
+                      polylines: [
+                        Polyline(
+                          points: _routePoints,
+                          color: Colors.cyan.withOpacity(0.85),
+                          strokeWidth: 5,
+                          borderColor: Colors.white.withOpacity(0.3),
+                          borderStrokeWidth: 1.5,
+                        ),
+                      ],
+                    ),
                 ],
               ),
             ),
@@ -778,6 +879,9 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   onPressed: () async {
                     final success = await _sharingService.leaveRide(ride);
                     if (success && mounted) {
+                      setState(() {
+                        _routePoints = []; // Clear route
+                      });
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text('Left the ride.'),
