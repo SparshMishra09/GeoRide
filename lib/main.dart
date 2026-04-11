@@ -8,10 +8,10 @@ void main() async {
   try {
     await Firebase.initializeApp();
     debugPrint("✅ Firebase initialized successfully");
-    
+
     // Wait a moment for auth to settle
     await Future.delayed(const Duration(milliseconds: 500));
-    
+
     // Check if already signed in
     User? currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) {
@@ -20,9 +20,9 @@ void main() async {
       debugPrint("✅ Anonymous user signed in: ${cred.user?.uid}");
     } else {
       debugPrint("✅ User already signed in: ${currentUser.uid}");
-      debugPrint("Email: ${currentUser.email}, Anonymous: ${currentUser.isAnonymous}");
+      debugPrint("Anonymous: ${currentUser.isAnonymous}");
     }
-  } catch(e) {
+  } catch (e) {
     debugPrint("❌ Firebase error: $e");
     // Try to sign in again if it failed
     try {
