@@ -143,6 +143,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Position? _lastRouteFetchPosition;
   bool _isFetchingRoute = false;
 
+  // ---------------------------------------------------------------------------
+  // Phase 6: Live Passenger Tracking
+  // ---------------------------------------------------------------------------
+  final Map<String, Symbol> _passengerSymbols = {};
+  StreamSubscription<QuerySnapshot>? _passengerLocationsSub;
+  QuerySnapshot? _latestPassengerSnapshot;
+  DateTime? _lastLocationUploadTime;
+  bool _hasReachedPortal = false;
+  final Set<String> _arrivedPassengers = {};
+
   @override
   void initState() {
     super.initState();
@@ -156,6 +166,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void dispose() {
     _positionStreamSub?.cancel();
     _ridesStreamSub?.cancel();
+    _passengerLocationsSub?.cancel();
     _expiryTimer?.cancel();
     if (_mapController != null) {
       _mapController!.onSymbolTapped.remove(_onSymbolTapped);
@@ -331,7 +342,35 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _animateCameraToPosition(smoothed);
 
     if (_myCurrentRide != null && _myCurrentRide!.creatorId != FirebaseAuth.instance.currentUser?.uid) {
-      _checkAndFetchRoute(_myCurrentRide!);
+      final ride = _myCurrentRide!;
+      final user = FirebaseAuth.instance.currentUser;
+      
+      _checkAndFetchRoute(ride);
+
+      // Phase 6: Passenger proximity alert
+      if (!_hasReachedPortal) {
+        final distToHost = Geolocator.distanceBetween(smoothed.latitude, smoothed.longitude, ride.lat, ride.lng);
+        if (distToHost <= 20) {
+          _hasReachedPortal = true;
+          _showSnackBar('You have reached the sharing spot!', isError: false);
+        }
+      }
+
+      // Phase 6: Passenger GPS upload to host tracker
+      final now = DateTime.now();
+      if (user != null && (_lastLocationUploadTime == null || now.difference(_lastLocationUploadTime!).inSeconds >= 5)) {
+        _lastLocationUploadTime = now;
+        FirebaseFirestore.instance
+            .collection('sharing_points')
+            .doc(ride.id)
+            .collection('passenger_locations')
+            .doc(user.uid)
+            .set({
+          'lat': smoothed.latitude,
+          'lng': smoothed.longitude,
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+      }
     }
   }
 
@@ -508,6 +547,33 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return byteData!.buffer.asUint8List();
   }
 
+  Future<Uint8List> _generatePassengerAvatarImage() async {
+    const double imgSize = 100;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final center = Offset(imgSize / 2, imgSize / 2);
+    final coreRadius = imgSize * 0.3;
+
+    // Cyan border
+    canvas.drawCircle(center, coreRadius + 4, Paint()..color = Colors.cyanAccent..style = PaintingStyle.fill);
+
+    // Dark grey core
+    canvas.drawCircle(center, coreRadius, Paint()..color = const Color(0xFF263238)..style = PaintingStyle.fill);
+
+    // Person icon
+    final personPaint = Paint()..color = Colors.white..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(center.dx, center.dy - coreRadius * 0.2), coreRadius * 0.3, personPaint);
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(center.dx, center.dy + coreRadius * 0.3), width: coreRadius * 1.2, height: coreRadius * 1.0),
+      3.14159, 3.14159, true, personPaint,
+    );
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(imgSize.toInt(), imgSize.toInt());
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
   // ---------------------------------------------------------------------------
   // REGISTER IMAGES ON MAP
   // ---------------------------------------------------------------------------
@@ -520,13 +586,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final portalBytes = await _generatePortalImage();
       await _mapController!.addImage('portal-icon', portalBytes);
 
+      final passengerBytes = await _generatePassengerAvatarImage();
+      await _mapController!.addImage('passenger-avatar', passengerBytes);
+
       _imagesRegistered = true;
-      debugPrint('✅ Avatar + Portal images registered');
+      debugPrint('✅ Avatar + Portal + Passenger images registered');
 
       // Retry pending portal updates now that images are registered
       if (_pendingPortalUpdate) {
         _pendingPortalUpdate = false;
         await _updatePortalSymbols();
+      }
+      
+      // Retry passenger locations if they arrived before images
+      if (_latestPassengerSnapshot != null) {
+        _processPassengerSnapshot(_latestPassengerSnapshot!);
       }
     } catch (e) {
       debugPrint('❌ Failed to register images: $e');
@@ -604,6 +678,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           _checkAndFetchRoute(myRide);
         }
 
+        if (myRide == null) {
+          _stopPassengerLocationsStream();
+          _clearPassengerSymbols();
+          _arrivedPassengers.clear();
+          _hasReachedPortal = false;
+        } else if (myRide.creatorId == user?.uid) {
+          _startPassengerLocationsStream(myRide.id);
+          if (_latestPassengerSnapshot != null) {
+            _processPassengerSnapshot(_latestPassengerSnapshot!);
+          }
+        }
+
         debugPrint('📡 Rides stream: ${rides.length} active rides');
       },
       onError: (e) => debugPrint('❌ Rides stream error: $e'),
@@ -649,6 +735,104 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     } catch (e) {
       debugPrint('⚠️ Expiry cleanup error: $e');
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // PHASE 6: LIVE PASSENGER LOCATION TRACKING
+  // ---------------------------------------------------------------------------
+
+  void _startPassengerLocationsStream(String rideId) {
+    if (_passengerLocationsSub != null) return; // Already listening
+
+    _passengerLocationsSub = FirebaseFirestore.instance
+        .collection('sharing_points')
+        .doc(rideId)
+        .collection('passenger_locations')
+        .snapshots()
+        .listen(
+      (snapshot) async {
+        _latestPassengerSnapshot = snapshot;
+        _processPassengerSnapshot(snapshot);
+      },
+      onError: (e) => debugPrint('❌ Passenger stream error: $e'),
+    );
+  }
+
+  Future<void> _processPassengerSnapshot(QuerySnapshot snapshot) async {
+    if (_myCurrentRide == null) return;
+
+    // Remove passengers that left the subcollection (i.e., disconnected or left ride)
+    final incomingUids = snapshot.docs.map((d) => d.id).toSet();
+    final currentSymbolUids = _passengerSymbols.keys.toSet();
+    
+    final toRemove = currentSymbolUids.difference(incomingUids);
+    for (final uid in toRemove) {
+      final sym = _passengerSymbols.remove(uid);
+      if (sym != null) await _mapController?.removeSymbol(sym);
+      _arrivedPassengers.remove(uid);
+    }
+
+    // Add or update passengers
+    for (final doc in snapshot.docs) {
+      // Double check they are actually part of the ride passengers array to be safe
+      if (!_myCurrentRide!.passengers.contains(doc.id)) {
+        final sym = _passengerSymbols.remove(doc.id);
+        if (sym != null) await _mapController?.removeSymbol(sym);
+        _arrivedPassengers.remove(doc.id);
+        continue;
+      }
+
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+      final lat = data['lat'] as double;
+      final lng = data['lng'] as double;
+
+      // Proximity check (20m)
+      if (_currentPosition != null && !_arrivedPassengers.contains(doc.id)) {
+        final dist = Geolocator.distanceBetween(
+          _currentPosition!.latitude, _currentPosition!.longitude,
+          lat, lng,
+        );
+        if (dist <= 20) {
+          _arrivedPassengers.add(doc.id);
+          _showSnackBar('A passenger has reached the sharing spot!', isError: false);
+        }
+      }
+
+      final existingSymbol = _passengerSymbols[doc.id];
+      if (existingSymbol == null && _isMapReady && _imagesRegistered) {
+        try {
+          final newSym = await _mapController!.addSymbol(SymbolOptions(
+            geometry: LatLng(lat, lng),
+            iconImage: 'passenger-avatar',
+            iconSize: 0.8,
+          ));
+          _passengerSymbols[doc.id] = newSym;
+        } catch (_) {}
+      } else if (existingSymbol != null) {
+        try {
+          await _mapController!.updateSymbol(
+            existingSymbol,
+            SymbolOptions(geometry: LatLng(lat, lng)),
+          );
+        } catch (_) {}
+      }
+    }
+  }
+
+  void _stopPassengerLocationsStream() {
+    _passengerLocationsSub?.cancel();
+    _passengerLocationsSub = null;
+  }
+
+  Future<void> _clearPassengerSymbols() async {
+    if (_mapController == null) return;
+    for (final sym in _passengerSymbols.values) {
+      try {
+        await _mapController!.removeSymbol(sym);
+      } catch (_) {}
+    }
+    _passengerSymbols.clear();
   }
 
   /// Update portal symbols on the map (deferred pattern)
@@ -1660,6 +1844,22 @@ class _RideBottomSheetState extends State<_RideBottomSheet> {
           'status': newSeats <= 0 ? 'full' : currentRide.status,
         });
       });
+      
+      // Push initial passenger location immediately upon joining.
+      try {
+        final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+        await FirebaseFirestore.instance
+            .collection('sharing_points')
+            .doc(widget.rideId)
+            .collection('passenger_locations')
+            .doc(widget.currentUserId)
+            .set({
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
+      
       Navigator.of(context).pop();
     } catch (e) {
       _showError(e.toString().replaceAll('Exception: ', ''));
