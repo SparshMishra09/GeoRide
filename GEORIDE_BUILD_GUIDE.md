@@ -556,6 +556,31 @@ id("com.google.gms.google-services") version "4.4.4" apply false
 
 **Build & Test:** `flutter build apk --release` → Full end-to-end test with two devices.
 
+### PHASE 6: Live Passenger Location Tracking (Radar)
+**Goal:** Hosts can see passengers moving in real-time on their map as they navigate to the portal.
+**Steps:**
+1. Passenger: On location update, throttle uploads to once every 5 seconds. Write GPS coordinates to `sharing_points/{pointId}/passenger_locations/{uid}`.
+2. Host: Subscribe to the `passenger_locations` subcollection.
+3. Host: Maintain state of passenger `Symbol`s, registering a `passenger-avatar` icon.
+4. Alerts: Trigger a "reached sharing spot" warning when distance < 20m.
+5. Cleanup: If someone leaves, remove their symbol from the map.
+
+### PHASE 7: Authentication, Identity, & Timer Fix
+**Goal:** Replace anonymous logic with proper Email/Password Auth, let users log out, and fix the frozen HUD countdown timer.
+**Steps:**
+1. Remove `signInAnonymously()` from `main.dart`. Use a `StreamBuilder` on `FirebaseAuth.instance.authStateChanges()`.
+2. Build an `AuthScreen` (`auth_screen.dart` or handled cleanly inside `main.dart`) with Email/Password Signup and Login variants, plus Forgot Password.
+3. Profile/Logout: Add an account icon in `HomeScreen` HUD. Opening it shows a BottomSheet with user Email, UID, and Logout button.
+4. Timer Fix: Implement an internal `_LiveCountdownText` Stateful Widget that holds its own `Timer.periodic` and uses `setState()` every second, rather than relying on the 30-second global app refresh.
+
+### PHASE 8: Real-Time Multiplayer Messaging
+**Goal:** Passengers and hosts can chat directly inside the active ride panel.
+**Steps:**
+1. Set up a `messages` subcollection under the corresponding `sharing_points` document.
+2. Build a chat interface overlay inside the `HomeScreen` bottom panel or as a standalone modal.
+3. Automatically generate system messages ("Host cancelled", "Passenger left").
+4. Sync the read/write operations to all active passengers.
+
 ### 🔑 CRITICAL REMINDER FOR EACH PHASE:
 - After completing each phase, run `flutter build apk --release`
 - Provide the APK to the user for manual testing

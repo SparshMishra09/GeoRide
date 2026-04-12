@@ -75,6 +75,252 @@ class SharingPoint {
 }
 
 // ============================================================================
+// LIVE COUNTDOWN TIMER WIDGET (Phase 7)
+// ============================================================================
+class _LiveCountdownText extends StatefulWidget {
+  final DateTime expiresAt;
+  const _LiveCountdownText({required this.expiresAt});
+
+  @override
+  State<_LiveCountdownText> createState() => _LiveCountdownTextState();
+}
+
+class _LiveCountdownTextState extends State<_LiveCountdownText> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (DateTime.now().isAfter(widget.expiresAt)) {
+      return const Text('Expired', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold));
+    }
+    final diff = widget.expiresAt.difference(DateTime.now());
+    final text = '${diff.inMinutes}m ${diff.inSeconds % 60}s';
+    return Text(text, style: const TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold));
+  }
+}
+
+// ============================================================================
+// CHAT MODAL SHEET (Phase 8)
+// ============================================================================
+class _ChatModalSheet extends StatefulWidget {
+  final String rideId;
+  const _ChatModalSheet({required this.rideId});
+
+  @override
+  State<_ChatModalSheet> createState() => _ChatModalSheetState();
+}
+
+class _ChatModalSheetState extends State<_ChatModalSheet> {
+  final _messageController = TextEditingController();
+  final _scrollController = ScrollController();
+
+  Future<void> _sendMessage() async {
+    final text = _messageController.text.trim();
+    if (text.isEmpty) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final messagesRef = FirebaseFirestore.instance
+        .collection('sharing_points')
+        .doc(widget.rideId)
+        .collection('messages');
+
+    _messageController.clear();
+    await messagesRef.add({
+      'senderId': user.uid,
+      'senderName': user.displayName ?? 'Trainer',
+      'text': text,
+      'timestamp': FieldValue.serverTimestamp(),
+      'isSystem': false,
+    });
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7 + bottomInset,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.chat_bubble, color: Colors.greenAccent),
+                const SizedBox(width: 8),
+                const Text('Ride Chat', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white70),
+                  onPressed: () => Navigator.pop(context),
+                )
+              ],
+            ),
+          ),
+          
+          // Messages List
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('sharing_points')
+                  .doc(widget.rideId)
+                  .collection('messages')
+                  .orderBy('timestamp', descending: false)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator(color: Colors.greenAccent));
+                }
+                
+                final docs = snapshot.data!.docs;
+                final currentUid = FirebaseAuth.instance.currentUser?.uid;
+
+                // Auto-scroll to bottom
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (_scrollController.hasClients) {
+                    _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+                  }
+                });
+
+                if (docs.isEmpty) {
+                  return const Center(
+                    child: Text('No messages yet. Say hello!', style: TextStyle(color: Colors.white54)),
+                  );
+                }
+
+                return ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(16),
+                  itemCount: docs.length,
+                  itemBuilder: (context, index) {
+                    final data = docs[index].data() as Map<String, dynamic>;
+                    final isSystem = data['isSystem'] ?? false;
+                    final isMe = data['senderId'] == currentUid;
+                    
+                    if (isSystem) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Center(
+                          child: Text(
+                            data['text'] ?? '',
+                            style: const TextStyle(color: Colors.orangeAccent, fontStyle: FontStyle.italic, fontSize: 13),
+                          ),
+                        ),
+                      );
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: isMe ? Colors.greenAccent.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(16).copyWith(
+                              bottomRight: isMe ? const Radius.circular(0) : const Radius.circular(16),
+                              bottomLeft: !isMe ? const Radius.circular(0) : const Radius.circular(16),
+                            ),
+                            border: Border.all(
+                              color: isMe ? Colors.greenAccent.withValues(alpha: 0.3) : Colors.transparent,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (!isMe)
+                                Text(
+                                  data['senderName'] ?? 'Unknown',
+                                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                              Text(data['text'] ?? '', style: const TextStyle(color: Colors.white, fontSize: 15)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          
+          // Input Area
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            color: Colors.black.withValues(alpha: 0.3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _messageController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      hintText: 'Type a message...',
+                      hintStyle: const TextStyle(color: Colors.white54),
+                      filled: true,
+                      fillColor: Colors.black.withValues(alpha: 0.4),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                    ),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendMessage(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.greenAccent,
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    icon: const Icon(Icons.send, color: Colors.black),
+                    onPressed: _sendMessage,
+                  ),
+                ),
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
 // HOME SCREEN — Phase 1 + 2 + 3: Map + Avatar + Hosting + Portals
 // ============================================================================
 
@@ -1212,12 +1458,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final isHost = ride.creatorId == user?.uid;
     
     final docRef = FirebaseFirestore.instance.collection('sharing_points').doc(ride.id);
+    final messagesRef = docRef.collection('messages');
 
     try {
       if (isHost) {
+        await messagesRef.add({
+          'senderId': 'system',
+          'senderName': 'System',
+          'text': 'Host has cancelled the ride.',
+          'timestamp': FieldValue.serverTimestamp(),
+          'isSystem': true,
+        });
         await docRef.update({'status': 'expired'});
         _showSnackBar('Ride cancelled.');
       } else {
+        await messagesRef.add({
+          'senderId': 'system',
+          'senderName': 'System',
+          'text': '${user?.displayName ?? 'A passenger'} has left the ride.',
+          'timestamp': FieldValue.serverTimestamp(),
+          'isSystem': true,
+        });
         await FirebaseFirestore.instance.runTransaction((transaction) async {
           final snapshot = await transaction.get(docRef);
           if (!snapshot.exists) return;
@@ -1283,7 +1544,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
                 const Spacer(),
                 if (isHost)
-                  Text(_myCurrentRide!.timeRemainingText, style: const TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold))
+                  _LiveCountdownText(expiresAt: _myCurrentRide!.expiresAt)
                 else if (distanceText.isNotEmpty)
                   Text(distanceText, style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
               ],
@@ -1340,6 +1601,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.cyanAccent)),
                   ),
                 ],
+                // Chat Button
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.greenAccent.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    onPressed: _showChatSheet,
+                    icon: const Icon(Icons.chat_bubble_outline),
+                    color: Colors.greenAccent,
+                    tooltip: 'Open Chat',
+                  ),
+                ),
                 ElevatedButton.icon(
                   onPressed: _leaveOrCancelRide,
                   icon: Icon(isHost ? Icons.cancel_outlined : Icons.logout),
@@ -1464,9 +1739,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
               child: Row(
                 children: [
-                  Container(
-                    width: 8, height: 8,
-                    decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.greenAccent),
+                  GestureDetector(
+                    onTap: _showProfileSheet,
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.greenAccent.withValues(alpha: 0.2),
+                      ),
+                      child: const Icon(Icons.account_circle, color: Colors.greenAccent, size: 24),
+                    ),
                   ),
                   const SizedBox(width: 8),
                   const Text(
@@ -1594,6 +1876,62 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         elevation: 0, onPressed: onPressed, tooltip: tooltip,
         child: Icon(icon, size: mini ? 20 : 26),
       ),
+    );
+  }
+
+  void _showProfileSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A2E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) {
+        final user = FirebaseAuth.instance.currentUser;
+        return Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.account_circle, size: 64, color: Colors.greenAccent),
+              const SizedBox(height: 16),
+              const Text('Trainer Profile', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              if (user?.displayName != null && user!.displayName!.isNotEmpty) ...[
+                Text(user.displayName!, style: const TextStyle(color: Colors.cyanAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+              ],
+              Text(user?.email ?? 'Unknown Email', style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 16)),
+              const SizedBox(height: 8),
+              Text('UID: ${user?.uid}', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+              const SizedBox(height: 32),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await FirebaseAuth.instance.signOut();
+                },
+                icon: const Icon(Icons.logout),
+                label: const Text('Log Out', style: TextStyle(fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 50),
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showChatSheet() {
+    if (_myCurrentRide == null) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ChatModalSheet(rideId: _myCurrentRide!.id),
     );
   }
 }
