@@ -581,6 +581,24 @@ id("com.google.gms.google-services") version "4.4.4" apply false
 3. Automatically generate system messages ("Host cancelled", "Passenger left").
 4. Sync the read/write operations to all active passengers.
 
+### PHASE 9: Trust & Safety Rating System
+**Goal:** Empower users to evaluate hosts and passengers, boosting community trust and security.
+**Steps:**
+1. Maintain a `users/{uid}` collection tracking `safetyRating`, `ratingCount`, and `ratingSum`.
+2. Map symbol tapping allows hosts to query a passenger's safety rating or kick them (freeing the seat) if they haven't arrived.
+3. Ride pre-boarding screens query and proudly display the Host's 5-Star rating to potential passengers.
+4. Custom 5-Star Arrival UI triggers instead of the chat panel when the passenger approaches <20m.
+5. Mutually cancelling/leaving rides properly credits safety ratings to the respective individual's profile without duplicating seats.
+
+### PHASE 10: Synchronized Ride Arrival & Mass Feedback (Lobby System)
+**Goal:** Prevent early drop-offs by forcing the ride lobby to coordinate wait times, and then triggering a synchronized Mass Feedback Event when all passengers have physically arrived.
+**Steps:**
+1. Implemented strict timer expiration logic forcing global local state resets to prevent ghost rides.
+2. Expanded `SharingPoint` with `arrivedPassengers` array tracking physical proximity.
+3. Automatically swap the UI layout on proximity <20m to a "waiting in lobby" modal while still preserving Chat capabilities.
+4. Auto-activate a central `status: rating_phase` global state lock-down when `arrivedPassengers.length == totalSeats`.
+5. Replaced individual rating dialogs with bulk Mass Rating Overlay Forms forcing participants to finish their evaluation duties synchronously.
+
 ### 🔑 CRITICAL REMINDER FOR EACH PHASE:
 - After completing each phase, run `flutter build apk --release`
 - Provide the APK to the user for manual testing

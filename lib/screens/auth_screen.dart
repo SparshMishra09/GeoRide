@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -57,7 +58,18 @@ class _AuthScreenState extends State<AuthScreen> {
           email: email,
           password: password,
         );
-        await cred.user?.updateDisplayName(_usernameController.text.trim());
+        final username = _usernameController.text.trim();
+        await cred.user?.updateDisplayName(username);
+        
+        // Initialize Phase 9 Safety Rating profile
+        if (cred.user != null) {
+          await FirebaseFirestore.instance.collection('users').doc(cred.user!.uid).set({
+            'displayName': username,
+            'safetyRating': 0.0,
+            'ratingCount': 0,
+            'ratingSum': 0,
+          });
+        }
       }
     } on FirebaseAuthException catch (e) {
       _showError(e.message ?? 'Authentication failed.');

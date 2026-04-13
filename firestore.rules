@@ -1,6 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Users Collection (Phase 9 Ratings)
+    match /users/{userId} {
+      allow read, write: if request.auth != null;
+    }
     
     // Sharing Points Collection
     match /sharing_points/{pointId} {

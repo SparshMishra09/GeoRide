@@ -27,12 +27,13 @@ class SharingPoint {
   final DateTime createdAt;
   final DateTime expiresAt;
   final List<String> passengers;
+  final List<String> arrivedPassengers;
 
   SharingPoint({
     required this.id, required this.creatorId, required this.lat,
     required this.lng, required this.destination, required this.seatsAvailable,
     required this.totalSeats, required this.status, required this.createdAt,
-    required this.expiresAt, required this.passengers,
+    required this.expiresAt, required this.passengers, required this.arrivedPassengers,
   });
 
   bool get isExpired => DateTime.now().isAfter(expiresAt);
@@ -61,6 +62,7 @@ class SharingPoint {
       status: map['status'] ?? 'active',
       createdAt: createdAt, expiresAt: expiresAt,
       passengers: List<String>.from(map['passengers'] ?? []),
+      arrivedPassengers: List<String>.from(map['arrivedPassengers'] ?? []),
     );
   }
 
@@ -71,6 +73,7 @@ class SharingPoint {
     'createdAt': Timestamp.fromDate(createdAt),
     'expiresAt': Timestamp.fromDate(expiresAt),
     'passengers': passengers,
+    'arrivedPassengers': arrivedPassengers,
   };
 }
 
@@ -593,12 +596,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       
       _checkAndFetchRoute(ride);
 
-      // Phase 6: Passenger proximity alert
+      // Phase 6 + Phase 10: Passenger proximity alert
       if (!_hasReachedPortal) {
         final distToHost = Geolocator.distanceBetween(smoothed.latitude, smoothed.longitude, ride.lat, ride.lng);
         if (distToHost <= 20) {
           _hasReachedPortal = true;
-          _showSnackBar('You have reached the sharing spot!', isError: false);
+          _showSnackBar('You have reached the spot! Wait for everyone to arrive.', isError: false);
+          if (user != null) {
+            FirebaseFirestore.instance.collection('sharing_points').doc(ride.id).update({
+              'arrivedPassengers': FieldValue.arrayUnion([user.uid])
+            });
+          }
         }
       }
 
@@ -894,7 +902,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _startRidesStream() {
     _ridesStreamSub = FirebaseFirestore.instance
         .collection('sharing_points')
-        .where('status', whereIn: ['active', 'full'])
+        .where('status', whereIn: ['active', 'full', 'rating_phase'])
         .snapshots()
         .listen(
       (snapshot) {
@@ -933,6 +941,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           _startPassengerLocationsStream(myRide.id);
           if (_latestPassengerSnapshot != null) {
             _processPassengerSnapshot(_latestPassengerSnapshot!);
+          }
+          
+          // Phase 10: Trigger 'rating_phase' when all expected passengers arrive
+          if (myRide.status != 'rating_phase' && myRide.arrivedPassengers.length == myRide.totalSeats && myRide.totalSeats > 0) {
+             FirebaseFirestore.instance.collection('sharing_points').doc(myRide.id).update({
+               'status': 'rating_phase'
+             });
           }
         }
 
@@ -1254,16 +1269,228 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _onSymbolTapped(Symbol symbol) {
     if (_activeRides.isEmpty) return;
 
-    // Find if the tapped symbol belongs to a portal
-    final entry = _portalSymbols.entries.where((e) => e.value.id == symbol.id).toList();
-    if (entry.isNotEmpty) {
-      final rideId = entry.first.key;
+    // 1. Check if the tapped symbol belongs to a portal
+    final portalEntry = _portalSymbols.entries.where((e) => e.value.id == symbol.id).toList();
+    if (portalEntry.isNotEmpty) {
+      final rideId = portalEntry.first.key;
       try {
         final ride = _activeRides.firstWhere((r) => r.id == rideId);
         _showRideBottomSheet(ride);
       } catch (e) {
         debugPrint('⚠️ Tapped portal ride data not found in _activeRides');
       }
+      return;
+    }
+
+    // 2. Check if the tapped symbol belongs to a passenger
+    final passEntry = _passengerSymbols.entries.where((e) => e.value.id == symbol.id).toList();
+    if (passEntry.isNotEmpty) {
+      final passengerUid = passEntry.first.key;
+      _showPassengerActionSheet(passengerUid);
+    }
+  }
+
+  // ===========================================================================
+  // PHASE 9: PASSENGER ACTIONS & RATINGS
+  // ===========================================================================
+  
+  void _showPassengerActionSheet(String passengerUid) {
+    if (_myCurrentRide == null) return;
+    
+    final hasArrived = _arrivedPassengers.contains(passengerUid);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A2E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) {
+        return StreamBuilder<DocumentSnapshot>(
+          stream: FirebaseFirestore.instance.collection('users').doc(passengerUid).snapshots(),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
+            final data = snapshot.data!.data() as Map<String, dynamic>?;
+            if (data == null) return const SizedBox.shrink();
+
+            final name = data['displayName'] ?? 'Passenger';
+            final rating = (data['safetyRating'] as num?)?.toDouble() ?? 0.0;
+            
+            return Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.account_circle, size: 64, color: Colors.cyanAccent),
+                  const SizedBox(height: 16),
+                  Text(name, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.star, color: Colors.amber, size: 20),
+                      const SizedBox(width: 4),
+                      Text(rating.toStringAsFixed(1), style: const TextStyle(color: Colors.amber, fontSize: 18, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+                  if (hasArrived)
+                    ElevatedButton.icon(
+                      onPressed: () {
+                         Navigator.pop(context);
+                         _showRatingDialog(passengerUid, name);
+                      },
+                      icon: const Icon(Icons.star_rate),
+                      label: const Text('Rate Passenger', style: TextStyle(fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.amber, foregroundColor: Colors.black,
+                        minimumSize: const Size(double.infinity, 50),
+                      ),
+                    )
+                  else
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                         Navigator.pop(context);
+                         _kickPassenger(passengerUid);
+                      },
+                      icon: const Icon(Icons.person_remove),
+                      label: const Text('Kick Passenger', style: TextStyle(fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent, foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 50),
+                      ),
+                    ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _kickPassenger(String uid) async {
+    if (_myCurrentRide == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance.collection('sharing_points').doc(_myCurrentRide!.id);
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(docRef);
+        if (!snapshot.exists) return;
+        final currentRide = SharingPoint.fromMap(snapshot.id, snapshot.data()!);
+        if (!currentRide.passengers.contains(uid)) return;
+        
+        transaction.update(docRef, {
+          'passengers': FieldValue.arrayRemove([uid]),
+          'seatsAvailable': currentRide.seatsAvailable + 1,
+          'status': 'active', // reopen if it was full
+        });
+      });
+      _showSnackBar('Passenger kicked.', isError: true);
+    } catch (e) {
+      _showSnackBar('Failed to kick: $e', isError: true);
+    }
+  }
+
+  void _showRatingDialog(String targetUid, String targetName, {bool isPassengerRatingHost = false, SharingPoint? rideToLeave}) {
+    int _rating = 0;
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Dialog(
+              backgroundColor: const Color(0xFF1A1A2E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Rate $targetName', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    const Text('How was your experience?', style: TextStyle(color: Colors.white70)),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(5, (index) {
+                        return IconButton(
+                          icon: Icon(
+                            index < _rating ? Icons.star : Icons.star_border,
+                            color: index < _rating ? Colors.amber : Colors.white24, size: 40,
+                          ),
+                          onPressed: () => setDialogState(() => _rating = index + 1),
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: _rating > 0 ? () async {
+                        Navigator.pop(context);
+                        await _submitRating(targetUid, _rating);
+                        if (isPassengerRatingHost && rideToLeave != null) {
+                           _leaveRideAfterArrival(rideToLeave);
+                        }
+                      } : null,
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.greenAccent, foregroundColor: Colors.black, minimumSize: const Size(double.infinity, 50)),
+                      child: const Text('Submit Rating', style: TextStyle(fontWeight: FontWeight.bold)),
+                    )
+                  ],
+                ),
+              ),
+            );
+          }
+        );
+      }
+    );
+  }
+
+  Future<void> _submitRating(String uid, int stars) async {
+    try {
+      final docRef = FirebaseFirestore.instance.collection('users').doc(uid);
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(docRef);
+        if (!snapshot.exists) {
+          transaction.set(docRef, {'displayName': 'Trainer', 'safetyRating': stars.toDouble(), 'ratingCount': 1, 'ratingSum': stars});
+        } else {
+          final data = snapshot.data()!;
+          final int count = (data['ratingCount'] as num?)?.toInt() ?? 0;
+          final int sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
+          final newCount = count + 1;
+          final newSum = sum + stars;
+          final newRating = newSum / newCount;
+          transaction.update(docRef, {
+            'ratingCount': newCount,
+            'ratingSum': newSum,
+            'safetyRating': newRating,
+          });
+        }
+      });
+      _showSnackBar('Rating submitted! Thanks for keeping GeoRide safe.');
+    } catch (e) {
+      debugPrint('Rating error: $e');
+    }
+  }
+
+  Future<void> _leaveRideAfterArrival(SharingPoint ride) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance.collection('sharing_points').doc(ride.id);
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(docRef);
+        if (!snapshot.exists) return;
+        transaction.update(docRef, {
+          'passengers': FieldValue.arrayRemove([user.uid]),
+          // PHASE 9 CRITICAL: Do NOT increment seatsAvailable because the seat was consumed
+        });
+      });
+      await _clearRoute();
+      setState(() {
+        _myCurrentRide = null;
+        _hasReachedPortal = false;
+      });
+      _stopPassengerLocationsStream();
+      _clearPassengerSymbols();
+    } catch (e) {
+      debugPrint('Error leaving: $e');
     }
   }
 
@@ -1350,7 +1577,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         seatsAvailable: result['seats'] as int,
         totalSeats: result['seats'] as int,
         status: 'active', createdAt: now, expiresAt: expiresAt,
-        passengers: [],
+        passengers: [], arrivedPassengers: [],
       );
 
       await FirebaseFirestore.instance
@@ -1489,6 +1716,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           final newSeats = currentRide.seatsAvailable + 1;
           transaction.update(docRef, {
             'passengers': FieldValue.arrayRemove([user?.uid]),
+            'arrivedPassengers': FieldValue.arrayRemove([user?.uid]),
             'seatsAvailable': newSeats,
             'status': currentRide.status == 'full' ? 'active' : currentRide.status,
           });
@@ -1561,8 +1789,80 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildSynchronousRatingOverlay() {
+    final ride = _myCurrentRide!;
+    final user = FirebaseAuth.instance.currentUser;
+    final isHost = ride.creatorId == user?.uid;
+
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.95), // Obscure the map heavily
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(24),
+            constraints: const BoxConstraints(maxHeight: 500, maxWidth: 400),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.5), width: 2),
+              boxShadow: [BoxShadow(color: Colors.amber.withValues(alpha: 0.2), blurRadius: 20)],
+            ),
+            child: isHost 
+              ? _HostRatingPassengersForm(rideToLeave: ride)
+              : _PassengerRatingHostForm(rideToLeave: ride),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildActiveRideBottomPanel() {
+    if (_myCurrentRide!.status == 'rating_phase') return const SizedBox.shrink(); // Hide panel during rating
+
     final isHost = _myCurrentRide!.creatorId == FirebaseAuth.instance.currentUser?.uid;
+
+    if (!isHost && _hasReachedPortal) {
+      return Positioned(
+        bottom: 24, left: 16, right: 16,
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A2E).withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5), width: 2),
+            boxShadow: [BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.2), blurRadius: 15)],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.check_circle_outline, color: Colors.cyanAccent, size: 40),
+              const SizedBox(height: 8),
+              const Text('You have arrived!', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text('Waiting for ${(_myCurrentRide!.totalSeats - _myCurrentRide!.arrivedPassengers.length).clamp(0, 99)} more passengers...', 
+                style: const TextStyle(color: Colors.white70)),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(color: Colors.greenAccent.withValues(alpha: 0.15), shape: BoxShape.circle),
+                    child: IconButton(onPressed: _showChatSheet, icon: const Icon(Icons.chat_bubble_outline), color: Colors.greenAccent),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: _leaveOrCancelRide,
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Leave Ride', style: TextStyle(fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+                  ),
+                ],
+              )
+            ],
+          ),
+        ),
+      );
+    }
 
     return Positioned(
       bottom: 24, left: 16, right: 16,
@@ -1855,6 +2155,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           // ─── ACTIVE RIDE BOTTOM PANEL ──────────────────────────────
           if (_myCurrentRide != null)
             _buildActiveRideBottomPanel(),
+
+          // ─── PHASE 10: SYNCHRONOUS RATING ──────────────────────────
+          if (_myCurrentRide != null && _myCurrentRide!.status == 'rating_phase')
+            _buildSynchronousRatingOverlay(),
         ],
       ),
     );
@@ -1893,7 +2197,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             children: [
               const Icon(Icons.account_circle, size: 64, color: Colors.greenAccent),
               const SizedBox(height: 16),
-              const Text('Trainer Profile', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              const Text('Your Profile', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               if (user?.displayName != null && user!.displayName!.isNotEmpty) ...[
                 Text(user.displayName!, style: const TextStyle(color: Colors.cyanAccent, fontSize: 18, fontWeight: FontWeight.bold)),
@@ -1902,6 +2206,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               Text(user?.email ?? 'Unknown Email', style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 16)),
               const SizedBox(height: 8),
               Text('UID: ${user?.uid}', style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12)),
+              const SizedBox(height: 16),
+              // Phase 10: Fetch Average Safety Rating
+              if (user != null)
+                StreamBuilder<DocumentSnapshot>(
+                  stream: FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData || !snapshot.data!.exists) return const SizedBox.shrink();
+                    final data = snapshot.data!.data() as Map<String, dynamic>;
+                    final rating = (data['safetyRating'] as num?)?.toDouble() ?? 0.0;
+                    return Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.star, color: Colors.amber, size: 20),
+                        const SizedBox(width: 4),
+                        Text(rating.toStringAsFixed(1), style: const TextStyle(color: Colors.amber, fontSize: 18, fontWeight: FontWeight.bold)),
+                      ],
+                    );
+                  },
+                ),
               const SizedBox(height: 32),
               ElevatedButton.icon(
                 onPressed: () async {
@@ -2323,7 +2646,32 @@ class _RideBottomSheetState extends State<_RideBottomSheet> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
+
+                // Host Phase 9 Rating
+                StreamBuilder<DocumentSnapshot>(
+                  stream: FirebaseFirestore.instance.collection('users').doc(ride.creatorId).snapshots(),
+                  builder: (context, hostSnap) {
+                    if (!hostSnap.hasData || !hostSnap.data!.exists) return const SizedBox.shrink();
+                    final hostData = hostSnap.data!.data() as Map<String, dynamic>;
+                    final rating = (hostData['safetyRating'] as num?)?.toDouble() ?? 0.0;
+                    final hostName = hostData['displayName'] ?? 'Trainer';
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 24),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.shield, color: Colors.greenAccent, size: 20),
+                          const SizedBox(width: 8),
+                          Text('Hosted by $hostName ', style: const TextStyle(color: Colors.white70, fontSize: 14)),
+                          const Spacer(),
+                          const Icon(Icons.star, color: Colors.amber, size: 18),
+                          const SizedBox(width: 4),
+                          Text(rating.toStringAsFixed(1), style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 16)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
 
                 // Stats row
                 Row(
@@ -2437,6 +2785,205 @@ class _RideBottomSheetState extends State<_RideBottomSheet> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// =============================================================================
+// PHASE 10: SYNCHRONOUS RATING FORMS
+// =============================================================================
+
+class _PassengerRatingHostForm extends StatefulWidget {
+  final SharingPoint rideToLeave;
+  const _PassengerRatingHostForm({required this.rideToLeave});
+
+  @override
+  State<_PassengerRatingHostForm> createState() => _PassengerRatingHostFormState();
+}
+
+class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
+  int _rating = 0;
+  bool _isSaving = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isSaving) return const Center(child: CircularProgressIndicator(color: Colors.amber));
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.stars, color: Colors.amber, size: 48),
+        const SizedBox(height: 16),
+        const Text('Ride Completed!', style: TextStyle(color: Colors.cyanAccent, fontSize: 24, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        const Text('Please rate the Host.', style: TextStyle(color: Colors.white70)),
+        const SizedBox(height: 24),
+        Row(
+           mainAxisAlignment: MainAxisAlignment.center,
+           children: List.generate(5, (index) {
+              return IconButton(
+                 icon: Icon(index < _rating ? Icons.star : Icons.star_border, color: index < _rating ? Colors.amber : Colors.white24, size: 40),
+                 onPressed: () => setState(() => _rating = index + 1),
+              );
+           }),
+        ),
+        const SizedBox(height: 24),
+        ElevatedButton.icon(
+           onPressed: _rating > 0 ? () async {
+              setState(() => _isSaving = true);
+              try {
+                // Submit rating to host
+                final docRef = FirebaseFirestore.instance.collection('users').doc(widget.rideToLeave.creatorId);
+                await FirebaseFirestore.instance.runTransaction((transaction) async {
+                  final snapshot = await transaction.get(docRef);
+                  if (!snapshot.exists) {
+                    transaction.set(docRef, {'displayName': 'Host', 'safetyRating': _rating.toDouble(), 'ratingCount': 1, 'ratingSum': _rating});
+                  } else {
+                    final data = snapshot.data()!;
+                    final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
+                    final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
+                    transaction.update(docRef, {
+                      'ratingCount': count + 1,
+                      'ratingSum': sum + _rating,
+                      'safetyRating': (sum + _rating) / (count + 1),
+                    });
+                  }
+                });
+
+                // Leave ride -> triggers global local state reset
+                final user = FirebaseAuth.instance.currentUser;
+                if (user != null) {
+                   final rideRef = FirebaseFirestore.instance.collection('sharing_points').doc(widget.rideToLeave.id);
+                   await FirebaseFirestore.instance.runTransaction((t) async {
+                       t.update(rideRef, {
+                         'passengers': FieldValue.arrayRemove([user.uid]),
+                         'arrivedPassengers': FieldValue.arrayRemove([user.uid]),
+                       });
+                   });
+                }
+              } catch (e) {
+                debugPrint('Rating fault: $e');
+              }
+           } : null,
+           icon: const Icon(Icons.check),
+           label: const Text('Submit & Finish', style: TextStyle(fontWeight: FontWeight.bold)),
+           style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black, minimumSize: const Size(double.infinity, 50)),
+        )
+      ],
+    );
+  }
+}
+
+class _HostRatingPassengersForm extends StatefulWidget {
+  final SharingPoint rideToLeave;
+  const _HostRatingPassengersForm({required this.rideToLeave});
+
+  @override
+  State<_HostRatingPassengersForm> createState() => _HostRatingPassengersFormState();
+}
+
+class _HostRatingPassengersFormState extends State<_HostRatingPassengersForm> {
+  final Map<String, int> _ratings = {};
+  List<String> _passengersToRate = [];
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _passengersToRate = List.from(widget.rideToLeave.arrivedPassengers);
+    for (final uid in _passengersToRate) {
+      _ratings[uid] = 0;
+    }
+  }
+
+  bool get _allRated => _ratings.isNotEmpty && _ratings.values.every((v) => v > 0);
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isSaving) return const Center(child: CircularProgressIndicator(color: Colors.amber));
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.shield, color: Colors.greenAccent, size: 48),
+        const SizedBox(height: 16),
+        const Text('Ride Completed!', textAlign: TextAlign.center, style: TextStyle(color: Colors.greenAccent, fontSize: 24, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        const Text('Please securely rate all passengers.', style: TextStyle(color: Colors.white70)),
+        const SizedBox(height: 16),
+        Expanded(
+          child: ListView.builder(
+            itemCount: _passengersToRate.length,
+            itemBuilder: (ctx, index) {
+              final pid = _passengersToRate[index];
+              return FutureBuilder<DocumentSnapshot>(
+                future: FirebaseFirestore.instance.collection('users').doc(pid).get(),
+                builder: (context, snapshot) {
+                   String name = 'Passenger';
+                   if (snapshot.hasData && snapshot.data!.exists) {
+                      name = (snapshot.data!.data() as Map<String, dynamic>?)?['displayName'] ?? 'Passenger';
+                   }
+                   return Padding(
+                     padding: const EdgeInsets.symmetric(vertical: 12.0),
+                     child: Column(
+                       crossAxisAlignment: CrossAxisAlignment.start,
+                       children: [
+                         Text(name, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                         Row(
+                           children: List.generate(5, (starIdx) {
+                              return IconButton(
+                                 icon: Icon(starIdx < _ratings[pid]! ? Icons.star : Icons.star_border, color: starIdx < _ratings[pid]! ? Colors.amber : Colors.white24, size: 32),
+                                 onPressed: () => setState(() => _ratings[pid] = starIdx + 1),
+                              );
+                           }),
+                         )
+                       ],
+                     ),
+                   );
+                }
+              );
+            }
+          ),
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton.icon(
+           onPressed: _allRated ? () async {
+              setState(() => _isSaving = true);
+              try {
+                // Submit ratings to all passengers
+                for (final pid in _ratings.keys) {
+                  final docRef = FirebaseFirestore.instance.collection('users').doc(pid);
+                  final rating = _ratings[pid]!;
+                  await FirebaseFirestore.instance.runTransaction((t) async {
+                    final snap = await t.get(docRef);
+                    if (!snap.exists) {
+                      t.set(docRef, {'displayName': 'Passenger', 'safetyRating': rating.toDouble(), 'ratingCount': 1, 'ratingSum': rating});
+                    } else {
+                      final data = snap.data()!;
+                      final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
+                      final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
+                      t.update(docRef, {
+                        'ratingCount': count + 1,
+                        'ratingSum': sum + rating,
+                        'safetyRating': (sum + rating) / (count + 1),
+                      });
+                    }
+                  });
+                }
+                
+                // End ride for host entirely
+                await FirebaseFirestore.instance.collection('sharing_points').doc(widget.rideToLeave.id).update({
+                  'status': 'expired'
+                });
+              } catch (e) {
+                debugPrint('Host rating fault: $e');
+              }
+           } : null,
+           icon: const Icon(Icons.check_circle),
+           label: const Text('Submit All & End Ride', style: TextStyle(fontWeight: FontWeight.bold)),
+           style: ElevatedButton.styleFrom(backgroundColor: Colors.greenAccent, foregroundColor: Colors.black, minimumSize: const Size(double.infinity, 50)),
+        )
+      ],
     );
   }
 }
