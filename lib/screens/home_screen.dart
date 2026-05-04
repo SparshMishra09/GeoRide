@@ -412,6 +412,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final Map<String, Symbol> _riderDots = {};
   Line? _traveledLine;
   bool _isOverviewMode = true;
+  
+  // Explore mode state
+  bool _isUserExploringMap = false;
+  bool _isProgrammaticCameraMove = false;
+  static const _exploreModeDuration = Duration(seconds: 30); // Auto-reset explore mode after 30s
+  Timer? _exploreModeTimer;
 
   @override
   void initState() {
@@ -420,6 +426,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initLocation();
     _startRidesStream();
     _startExpiryTimer();
+    // Initialize explore mode timer
+    _exploreModeTimer = null;
   }
 
   @override
@@ -429,8 +437,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _ridesStreamSub?.cancel();
     _passengerLocationsSub?.cancel();
     _expiryTimer?.cancel();
+    _exploreModeTimer?.cancel();
     if (_mapController != null) {
       _mapController!.onSymbolTapped.remove(_onSymbolTapped);
+      _mapController!.removeListener(_onCameraMove); // Remove camera listener
     }
     super.dispose();
   }
@@ -598,10 +608,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       }
     }
 
-    setState(() => _currentPosition = smoothed);
-    _positionStreamController.add(smoothed);
-    _updateAvatarPosition(smoothed);
-    _animateCameraToPosition(smoothed);
+     setState(() => _currentPosition = smoothed);
+     _positionStreamController.add(smoothed);
+     _updateAvatarPosition(smoothed);
+     
+     // Only auto-center camera if user is not exploring the map
+     if (!_isUserExploringMap) {
+       _animateCameraToPosition(smoothed);
+     }
 
     if (_myCurrentRide != null && _myCurrentRide!.creatorId != FirebaseAuth.instance.currentUser?.uid) {
       final ride = _myCurrentRide!;
@@ -1264,29 +1278,50 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ---------------------------------------------------------------------------
   // MAP CALLBACKS
   // ---------------------------------------------------------------------------
-  void _onMapCreated(MapLibreMapController controller) async {
-    _mapController = controller;
-    _isMapReady = true;
-    _mapController!.onSymbolTapped.add(_onSymbolTapped);
-    debugPrint('✅ Map created');
+void _onMapCreated(MapLibreMapController controller) async {
+  _mapController = controller;
+  _isMapReady = true;
+  _mapController!.onSymbolTapped.add(_onSymbolTapped);
+  // Add camera move listener to detect when user is exploring
+  _mapController!.addListener(_onCameraMove);
+  debugPrint('✅ Map created');
 
-    await _registerMarkerImages();
-    await _updatePortalSymbols();
-    await _createAvatarSymbol();
-  }
+  await _registerMarkerImages();
+  await _updatePortalSymbols();
+  await _createAvatarSymbol();
+}
 
-  void _onStyleLoaded() {
-    debugPrint('✅ Map style loaded');
-    if (!_imagesRegistered) {
-      _registerMarkerImages().then((_) {
-        _createAvatarSymbol();
-        _updatePortalSymbols();
-      });
-    }
-    if (_pendingPortalUpdate) {
+void _onStyleLoaded() {
+  debugPrint('✅ Map style loaded');
+  if (!_imagesRegistered) {
+    _registerMarkerImages().then((_) {
+      _createAvatarSymbol();
       _updatePortalSymbols();
-    }
+    });
   }
+  if (_pendingPortalUpdate) {
+    _updatePortalSymbols();
+  }
+}
+
+// Add near other camera/map methods
+void _onCameraMove() {
+  // If the camera is moving due to our own code, ignore it
+  if (_isProgrammaticCameraMove) return;
+  
+  // User is manually moving the map, enable explore mode
+  if (!_isUserExploringMap) {
+    setState(() => _isUserExploringMap = true);
+    // Reset/cancel existing timer
+    _exploreModeTimer?.cancel();
+    // Start new timer to auto-disable explore mode after duration
+    _exploreModeTimer = Timer(_exploreModeDuration, () {
+      if (mounted) {
+        setState(() => _isUserExploringMap = false);
+      }
+    });
+  }
+}
 
   // ===========================================================================
   // PHASE 4: JOIN FLOW (Map Tap & Bottom Sheet)
@@ -2349,14 +2384,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   color: Colors.greenAccent,
                 ),
                 const SizedBox(height: 12),
-                // My Location
-                _buildFab(
-                  heroTag: 'my_location',
-                  icon: Icons.my_location,
-                  tooltip: 'My Location',
-                  onPressed: _goToMyLocation,
-                  color: Colors.cyanAccent,
-                ),
+                 // My Location
+                 _buildFab(
+                   heroTag: 'my_location',
+                   icon: _isUserExploringMap ? Icons.my_location : Icons.my_location_outlined,
+                   tooltip: 'My Location',
+                   onPressed: _goToMyLocation,
+                   color: _isUserExploringMap ? Colors.greenAccent : Colors.cyanAccent,
+                 ),
               ],
             ),
           ),
