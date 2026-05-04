@@ -10,6 +10,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../services/corridor_service.dart';
+import '../widgets/ar_navigation_overlay.dart';
 
 // ============================================================================
 // SHARING POINT MODEL (inline per architecture rules)
@@ -351,6 +353,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Position? _currentPosition;
   StreamSubscription<Position>? _positionStreamSub;
   final List<Position> _positionBuffer = [];
+  final StreamController<Position> _positionStreamController = StreamController<Position>.broadcast();
 
   // ---------------------------------------------------------------------------
   // Camera debounce
@@ -401,6 +404,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   DateTime? _lastLocationUploadTime;
   bool _hasReachedPortal = false;
   final Set<String> _arrivedPassengers = {};
+  bool _isArNavMode = false;
+  final ValueNotifier<LatLng?> _arNavMapTapNotifier = ValueNotifier(null);
+
+  // Phase 10: Glowing Route & Rider Dots
+  final List<Line> _glowLines = [];
+  final Map<String, Symbol> _riderDots = {};
+  Line? _traveledLine;
+  bool _isOverviewMode = true;
 
   @override
   void initState() {
@@ -414,6 +425,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _positionStreamSub?.cancel();
+    _positionStreamController.close();
     _ridesStreamSub?.cancel();
     _passengerLocationsSub?.cancel();
     _expiryTimer?.cancel();
@@ -587,6 +599,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
 
     setState(() => _currentPosition = smoothed);
+    _positionStreamController.add(smoothed);
     _updateAvatarPosition(smoothed);
     _animateCameraToPosition(smoothed);
 
@@ -828,6 +841,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return byteData!.buffer.asUint8List();
   }
 
+  Future<Uint8List> _generateRiderDotImage() async {
+    const double imgSize = 100;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final center = Offset(imgSize / 2, imgSize / 2);
+    
+    // Outer Glow
+    final glowPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [Colors.cyanAccent.withValues(alpha: 0.8), Colors.cyanAccent.withValues(alpha: 0.0)],
+      ).createShader(Rect.fromCircle(center: center, radius: imgSize / 2));
+    canvas.drawCircle(center, imgSize / 2, glowPaint);
+    
+    // Core
+    canvas.drawCircle(center, imgSize * 0.2, Paint()..color = Colors.white);
+    
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(imgSize.toInt(), imgSize.toInt());
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
   // ---------------------------------------------------------------------------
   // REGISTER IMAGES ON MAP
   // ---------------------------------------------------------------------------
@@ -842,6 +877,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
       final passengerBytes = await _generatePassengerAvatarImage();
       await _mapController!.addImage('passenger-avatar', passengerBytes);
+
+      final riderDotBytes = await _generateRiderDotImage();
+      await _mapController!.addImage('rider-dot', riderDotBytes);
 
       _imagesRegistered = true;
       debugPrint('✅ Avatar + Portal + Passenger images registered');
@@ -1170,17 +1208,31 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     final now = DateTime.now();
     final canAnimate = _lastCameraAnimateTime == null ||
-        now.difference(_lastCameraAnimateTime!) >= _minAnimateInterval;
+        now.difference(_lastCameraAnimateTime!) >= _minAnimateInterval ||
+        _isArNavMode; // Always animate in AR Nav mode for smooth tracking
 
     if (canAnimate) {
-      _mapController!.animateCamera(
-        CameraUpdate.newCameraPosition(CameraPosition(
-          target: LatLng(pos.latitude, pos.longitude),
-          zoom: _currentZoom,
-          tilt: _is3DMode ? 60.0 : 0.0,
-        )),
-        duration: const Duration(milliseconds: 500),
-      );
+      if (_isArNavMode) {
+        // Pokemon GO Mode: Lock camera to user position and device heading
+        _mapController!.animateCamera(
+          CameraUpdate.newCameraPosition(CameraPosition(
+            target: LatLng(pos.latitude, pos.longitude),
+            zoom: 19.5, // Closer for AR feel
+            tilt: 60.0,
+            bearing: pos.heading, // World rotates around user
+          )),
+          duration: const Duration(milliseconds: 600),
+        );
+      } else {
+        _mapController!.animateCamera(
+          CameraUpdate.newCameraPosition(CameraPosition(
+            target: LatLng(pos.latitude, pos.longitude),
+            zoom: _currentZoom,
+            tilt: _is3DMode ? 60.0 : 0.0,
+          )),
+          duration: const Duration(milliseconds: 500),
+        );
+      }
       _lastCameraAnimateTime = now;
     }
   }
@@ -1241,6 +1293,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ===========================================================================
 
   void _handleMapTap(LatLng tapLocation) {
+    if (_isArNavMode) {
+      _arNavMapTapNotifier.value = tapLocation;
+      // Reset after a tiny delay so the same coordinate can be tapped again if needed
+      Future.delayed(const Duration(milliseconds: 100), () => _arNavMapTapNotifier.value = null);
+      return;
+    }
+
     if (_activeRides.isEmpty) return;
 
     SharingPoint? closestRide;
@@ -1280,6 +1339,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         debugPrint('⚠️ Tapped portal ride data not found in _activeRides');
       }
       return;
+    }
+
+    // 1b. Check if tapped symbol belongs to a glowing dot (Corridor Rider)
+    final riderDotEntry = _riderDots.entries.where((e) => e.value.id == symbol.id).toList();
+    if (riderDotEntry.isNotEmpty) {
+       _arNavMapTapNotifier.value = riderDotEntry.first.value.options.geometry;
+       return;
     }
 
     // 2. Check if the tapped symbol belongs to a passenger
@@ -1624,11 +1690,164 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ===========================================================================
 
   Future<void> _clearRoute() async {
+    for (final line in _glowLines) {
+      try { await _mapController?.removeLine(line); } catch (_) {}
+    }
+    _glowLines.clear();
+
+    if (_traveledLine != null && _mapController != null) {
+      try { await _mapController!.removeLine(_traveledLine!); } catch (_) {}
+      _traveledLine = null;
+    }
+    
     if (_routeLine != null && _mapController != null) {
-      try {
-        await _mapController!.removeLine(_routeLine!);
-      } catch (_) {}
+      try { await _mapController!.removeLine(_routeLine!); } catch (_) {}
       _routeLine = null;
+    }
+  }
+
+  Future<void> _updateSegmentedRoute(List<LatLng> fullPath, LatLng currentPos) async {
+    if (_mapController == null || fullPath.length < 2) return;
+
+    // Find nearest point index
+    int nearestIdx = 0;
+    double minDist = double.infinity;
+    for (int i = 0; i < fullPath.length; i++) {
+      final d = Geolocator.distanceBetween(currentPos.latitude, currentPos.longitude, fullPath[i].latitude, fullPath[i].longitude);
+      if (d < minDist) {
+        minDist = d;
+        nearestIdx = i;
+      }
+    }
+
+    final traveled = fullPath.sublist(0, nearestIdx + 1);
+    final remaining = fullPath.sublist(nearestIdx);
+
+    // Update Remaining (Neon Glow)
+    await _drawGlowingRoute(remaining);
+
+    // Update Traveled (Dimmed Dashed)
+    if (_traveledLine != null) {
+      try { await _mapController!.removeLine(_traveledLine!); } catch (_) {}
+    }
+    
+    _traveledLine = await _mapController!.addLine(LineOptions(
+      geometry: traveled,
+      lineColor: '#607D8B', // Blue grey (dimmed)
+      lineWidth: 2.0,
+      lineOpacity: 0.5,
+    ));
+  }
+
+  void _flyToStreetLevel(Position pos) {
+    if (_mapController == null) return;
+    _isOverviewMode = false;
+    _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(CameraPosition(
+        target: LatLng(pos.latitude, pos.longitude),
+        zoom: 18.5,
+        tilt: 60.0,
+        bearing: pos.heading,
+      )),
+      duration: const Duration(milliseconds: 1200),
+    );
+  }
+
+  Future<void> _drawGlowingRoute(List<LatLng> points) async {
+    if (_mapController == null) return;
+    await _clearRoute();
+
+    // 1. Broad Aura (Electric Cyan)
+    final aura = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#00E5FF',
+      lineWidth: 24.0,
+      lineOpacity: 0.1,
+      lineJoin: 'round',
+    ));
+    _glowLines.add(aura);
+
+    // 2. Main Glow
+    final glow = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#00E5FF',
+      lineWidth: 14.0,
+      lineOpacity: 0.3,
+      lineJoin: 'round',
+    ));
+    _glowLines.add(glow);
+
+    // 3. Inner Neon
+    final inner = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#00E5FF',
+      lineWidth: 8.0,
+      lineOpacity: 0.6,
+      lineJoin: 'round',
+    ));
+    _glowLines.add(inner);
+
+    // 4. Pure Core
+    _routeLine = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#FFFFFF',
+      lineWidth: 3.0,
+      lineOpacity: 1.0,
+      lineJoin: 'round',
+    ));
+  }
+
+  void _flyToRoute(List<LatLng> points) {
+    if (_mapController == null || points.isEmpty) return;
+    
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(southwest: LatLng(minLat, minLng), northeast: LatLng(maxLat, maxLng)),
+        top: 100, bottom: 250, left: 60, right: 60,
+      ),
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  Future<void> _updateRiderDots(List<CorridorRider> riders) async {
+    if (_mapController == null || !_imagesRegistered) return;
+
+    final incomingIds = riders.map((r) => r.userId).toSet();
+    final existingIds = _riderDots.keys.toSet();
+
+    // Remove old dots
+    final toRemove = existingIds.difference(incomingIds);
+    for (final id in toRemove) {
+      final sym = _riderDots.remove(id);
+      if (sym != null) await _mapController?.removeSymbol(sym);
+    }
+
+    // Add/Update dots
+    for (final rider in riders) {
+      if (_riderDots.containsKey(rider.userId)) {
+        await _mapController?.updateSymbol(_riderDots[rider.userId]!, SymbolOptions(
+          geometry: rider.position,
+        ));
+      } else {
+        final sym = await _mapController?.addSymbol(SymbolOptions(
+          geometry: rider.position,
+          iconImage: 'rider-dot',
+          iconSize: 0.6,
+        ));
+        if (sym != null) _riderDots[rider.userId] = sym;
+      }
     }
   }
 
@@ -2100,15 +2319,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (_myCurrentRide == null) ...[
+                  // AR Navigation Mode FAB
+                  _buildFab(
+                    heroTag: 'ar_nav_mode',
+                    icon: Icons.near_me,
+                    tooltip: 'Start Journey',
+                    onPressed: () => setState(() => _isArNavMode = true),
+                    color: Colors.cyanAccent,
+                    mini: false,
+                  ),
+                  const SizedBox(height: 12),
                   // Host Ride FAB
                   _buildFab(
-                  heroTag: 'host_ride',
-                  icon: Icons.add_location_alt,
-                  tooltip: 'Host Ride',
-                  onPressed: _showHostRideDialog,
-                  color: Colors.orangeAccent,
-                  mini: false,
-                ),
+                    heroTag: 'host_ride',
+                    icon: Icons.add_circle,
+                    tooltip: 'Host a Ride',
+                    onPressed: _showHostRideDialog,
+                    color: Colors.pinkAccent,
+                    mini: false,
+                  ),
                 const SizedBox(height: 12),
                 ],
                 // 3D/2D toggle
@@ -2159,6 +2388,31 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           // ─── PHASE 10: SYNCHRONOUS RATING ──────────────────────────
           if (_myCurrentRide != null && _myCurrentRide!.status == 'rating_phase')
             _buildSynchronousRatingOverlay(),
+
+          // ─── AR NAVIGATION OVERLAY (New Mode) ──────────────────────
+          if (_isArNavMode)
+            ArNavigationOverlay(
+              mapController: _mapController,
+              positionStream: _positionStreamController.stream,
+              initialPosition: _currentPosition!,
+              mapTapNotifier: _arNavMapTapNotifier,
+              onExit: () => setState(() => _isArNavMode = false),
+              onRouteFetched: (points) {
+                _drawGlowingRoute(points);
+                _flyToRoute(points);
+              },
+              onNearbyRidersUpdated: (riders) => _updateRiderDots(riders),
+              onNavigationStarted: (pos) => _flyToStreetLevel(pos),
+              onUpdateSegmentedPath: (points, pos) => _updateSegmentedRoute(points, pos),
+              onToggleOverview: (points) {
+                 if (_isOverviewMode) {
+                   _flyToStreetLevel(_currentPosition!);
+                 } else {
+                   _isOverviewMode = true;
+                   _flyToRoute(points);
+                 }
+              },
+            ),
         ],
       ),
     );
