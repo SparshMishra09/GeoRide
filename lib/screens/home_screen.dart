@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'dart:ui' as ui;
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
@@ -162,9 +160,10 @@ class _ChatModalSheetState extends State<_ChatModalSheet> {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+   @override
+   Widget build(BuildContext context) {
+     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+     final currentUid = FirebaseAuth.instance.currentUser?.uid;
     
     return Container(
       height: MediaQuery.of(context).size.height * 0.7 + bottomInset,
@@ -209,10 +208,9 @@ class _ChatModalSheetState extends State<_ChatModalSheet> {
                   return const Center(child: CircularProgressIndicator(color: Colors.greenAccent));
                 }
                 
-                final docs = snapshot.data!.docs;
-                final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                 final docs = snapshot.data!.docs;
 
-                // Auto-scroll to bottom
+                 // Auto-scroll to bottom
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_scrollController.hasClients) {
                     _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
@@ -1225,7 +1223,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         now.difference(_lastCameraAnimateTime!) >= _minAnimateInterval ||
         _isArNavMode; // Always animate in AR Nav mode for smooth tracking
 
+    // Don't auto-animate if user is exploring the map
+    if (_isUserExploringMap && !_isArNavMode) {
+      return;
+    }
+
     if (canAnimate) {
+      _isProgrammaticCameraMove = true;
+
       if (_isArNavMode) {
         // Pokemon GO Mode: Lock camera to user position and device heading
         _mapController!.animateCamera(
@@ -1237,6 +1242,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           )),
           duration: const Duration(milliseconds: 600),
         );
+
+        // Reset programmatic flag after animation
+        Future.delayed(const Duration(milliseconds: 650), () {
+          if (mounted) _isProgrammaticCameraMove = false;
+        });
       } else {
         _mapController!.animateCamera(
           CameraUpdate.newCameraPosition(CameraPosition(
@@ -1246,6 +1256,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           )),
           duration: const Duration(milliseconds: 500),
         );
+
+        // Reset programmatic flag after animation
+        Future.delayed(const Duration(milliseconds: 550), () {
+          if (mounted) _isProgrammaticCameraMove = false;
+        });
       }
       _lastCameraAnimateTime = now;
     }
@@ -1254,6 +1269,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _goToMyLocation() {
     if (_currentPosition == null || _mapController == null) return;
     _lastCameraAnimateTime = null;
+    // Disable explore mode when recentering
+    setState(() => _isUserExploringMap = false);
+    _exploreModeTimer?.cancel();
     _animateCameraToPosition(_currentPosition!);
   }
 
@@ -1321,6 +1339,42 @@ void _onCameraMove() {
       }
     });
   }
+}
+
+// Add explore mode indicator to UI
+Widget _buildExploreModeIndicator() {
+  if (!_isUserExploringMap) return const SizedBox.shrink();
+  
+  return Positioned(
+    top: MediaQuery.of(context).padding.top + 70, // Below top status bar
+    left: MediaQuery.of(context).size.width / 2 - 75, // Centered
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.greenAccent),
+        boxShadow: [
+          BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.2), blurRadius: 10)
+        ]
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.explore, color: Colors.greenAccent, size: 18),
+          const SizedBox(width: 8),
+          const Text(
+            'Exploring Map',
+            style: TextStyle(
+              color: Colors.greenAccent,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
   // ===========================================================================
@@ -2255,27 +2309,30 @@ void _onCameraMove() {
       );
     }
 
-    // Main map screen
-    return Scaffold(
-      body: Stack(
-        children: [
-          // ─── MAP ───────────────────────────────────────────────────
-          MapLibreMap(
-            styleString: _mapStyleJson!,
-            initialCameraPosition: CameraPosition(
-              target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-              zoom: _currentZoom,
-              tilt: _is3DMode ? 60.0 : 0.0,
-            ),
-            myLocationEnabled: false,
-            onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _onStyleLoaded,
-            onMapClick: (point, latlng) => _handleMapTap(latlng),
-            trackCameraPosition: true,
-            compassEnabled: false,
-            rotateGesturesEnabled: true,
-            tiltGesturesEnabled: true,
-          ),
+     // Main map screen
+     return Scaffold(
+       body: Stack(
+         children: [
+           // ─── MAP ───────────────────────────────────────────────────
+           MapLibreMap(
+             styleString: _mapStyleJson!,
+             initialCameraPosition: CameraPosition(
+               target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+               zoom: _currentZoom,
+               tilt: _is3DMode ? 60.0 : 0.0,
+             ),
+             myLocationEnabled: false,
+             onMapCreated: _onMapCreated,
+             onStyleLoadedCallback: _onStyleLoaded,
+             onMapClick: (point, latlng) => _handleMapTap(latlng),
+             trackCameraPosition: true,
+             compassEnabled: false,
+             rotateGesturesEnabled: true,
+             tiltGesturesEnabled: true,
+           ),
+           
+           // ─── EXPLORE MODE INDICATOR ───────────────────────────────
+           _buildExploreModeIndicator(),
 
           // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
           if (_myCurrentRide != null)
