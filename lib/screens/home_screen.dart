@@ -2418,23 +2418,13 @@ Widget _buildExploreModeIndicator() {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (_myCurrentRide == null) ...[
-                    // AR Navigation Mode FAB
+                    // AR Navigation Mode FAB (serves as unified Create Ride flow)
                     _buildFab(
                       heroTag: 'ar_nav_mode',
                       icon: Icons.near_me,
                       tooltip: 'Start Journey',
                       onPressed: () => setState(() => _isArNavMode = true),
                       color: AppColors.accent1,
-                      mini: false,
-                    ),
-                    const SizedBox(height: 12),
-                    // Host Ride FAB
-                    _buildFab(
-                      heroTag: 'host_ride',
-                      icon: Icons.add_circle,
-                      tooltip: 'Host a Ride',
-                      onPressed: _showHostRideDialog,
-                      color: AppColors.cta,
                       mini: false,
                     ),
                     const SizedBox(height: 12),
