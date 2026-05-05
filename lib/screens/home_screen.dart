@@ -1687,68 +1687,6 @@ Widget _buildExploreModeIndicator() {
     return query.docs.isNotEmpty;
   }
 
-  void _showHostRideDialog() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _showSnackBar('Not authenticated. Please restart the app.', isError: true);
-      return;
-    }
-    if (_currentPosition == null) {
-      _showSnackBar('GPS not available. Cannot host a ride.', isError: true);
-      return;
-    }
-    if (_isCreatingRide) return;
-
-    final alreadyHosting = await _isAlreadyHosting();
-    if (alreadyHosting) {
-      _showSnackBar('You are already hosting a ride!', isError: true);
-      return;
-    }
-    final alreadyPassenger = await _isAlreadyPassenger();
-    if (alreadyPassenger) {
-      _showSnackBar('You are already in a ride. Leave it first.', isError: true);
-      return;
-    }
-
-    if (!mounted) return;
-
-    final result = await showDialog<Map<String, dynamic>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => _HostRideDialog(),
-    );
-    if (result == null) return;
-
-    _isCreatingRide = true;
-    try {
-      final now = DateTime.now();
-      final waitMinutes = result['waitMinutes'] as int;
-      final expiresAt = now.add(Duration(minutes: waitMinutes));
-
-      final rideData = SharingPoint(
-        id: '', creatorId: user.uid,
-        lat: _currentPosition!.latitude, lng: _currentPosition!.longitude,
-        destination: result['destination'] as String,
-        seatsAvailable: result['seats'] as int,
-        totalSeats: result['seats'] as int,
-        status: 'active', createdAt: now, expiresAt: expiresAt,
-        passengers: [], arrivedPassengers: [],
-      );
-
-      await FirebaseFirestore.instance
-          .collection('sharing_points')
-          .add(rideData.toMap());
-
-      _showSnackBar('🎉 Ride created! Others can join for ${waitMinutes}min.');
-      debugPrint('✅ Ride created: ${result['destination']}');
-    } catch (e) {
-      debugPrint('❌ Failed to create ride: $e');
-      _showSnackBar('Failed to create ride: $e', isError: true);
-    } finally {
-      _isCreatingRide = false;
-    }
-  }
-
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
