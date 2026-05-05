@@ -292,6 +292,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
   bool _awaitingSameRouteAcceptance = false; // Rider waiting for host to accept same-route match
   String? _currentRouteId;
   String? _matchedRiderId;
+  List<String> _passengers = [];
   final Map<String, Point> _riderScreenPositions = {};
   int _currentWaypointIndex = 0;
   double _distanceToNextWaypoint = 0.0;
@@ -1068,6 +1069,27 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     });
   }
 
+  /// Removes a passenger from the current ride.
+  Future<void> _kickPassenger(String passengerId) async {
+    if (_currentRouteId == null) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('sharing_points')
+          .doc(_currentRouteId)
+          .update({
+        'passengers': FieldValue.arrayRemove([passengerId]),
+      });
+      setState(() {
+        _passengers.remove(passengerId);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Passenger removed'), backgroundColor: Color(0xFF43A047)),
+      );
+    } catch (e) {
+      debugPrint('❌ Failed to kick passenger: $e');
+    }
+  }
+
   /// Queries Firestore for any waiting routes with the same source+destination
   /// as the current user. If found, creates a 'sameRoute' pending match.
   Future<void> _checkForSameRouteMatch() async {
@@ -1470,6 +1492,35 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
               ),
             ],
           ),
+          if (_matchedRiderId == FirebaseAuth.instance.currentUser?.uid && _passengers.isNotEmpty)
+            Column(
+              children: [
+                const SizedBox(height: 16),
+                const Text('PASSENGERS', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                const SizedBox(height: 8),
+                ...List.generate(_passengers.length, (i) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.person, color: Colors.cyanAccent, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(_passengers[i], style: const TextStyle(color: Colors.white))),
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 20),
+                          onPressed: () => _kickPassenger(_passengers[i]),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+            ),
         ],
       ),
     );
