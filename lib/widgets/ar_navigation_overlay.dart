@@ -955,9 +955,28 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     }
   }
 
-  void _startLobbyLogic() {
+  Future<void> _startLobbyLogic() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+
+    // Clear any stale matches before starting lobby to prevent instant jump
+    try {
+      final staleMatches = await FirebaseFirestore.instance
+          .collection('matches')
+          .where('riderId', isEqualTo: user.uid)
+          .where('status', isEqualTo: 'accepted')
+          .get();
+      final hostMatches = await FirebaseFirestore.instance
+          .collection('matches')
+          .where('hostId', isEqualTo: user.uid)
+          .where('status', isEqualTo: 'accepted')
+          .get();
+      for (final doc in [...staleMatches.docs, ...hostMatches.docs]) {
+        await doc.reference.delete();
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to clear stale matches: $e');
+    }
 
     // 1. Push own location to RTDB immediately
     RTDBService.pushLocation(
