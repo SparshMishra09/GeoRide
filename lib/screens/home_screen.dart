@@ -10,6 +10,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/corridor_service.dart';
 import '../widgets/ar_navigation_overlay.dart';
+import '../theme/app_theme.dart';
 
 // ============================================================================
 // SHARING POINT MODEL (inline per architecture rules)
@@ -1161,8 +1162,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final visibleIds = <String>{};
     for (final ride in _activeRides) {
       if (ride.isVisible || ride.status == 'full') {
-        // Don't show portal for the creator's own ride (they see it via Host panel later)
-        // Actually, show all portals so everyone can see them
+        // Show all portals so everyone can see them
         visibleIds.add(ride.id);
       }
     }
@@ -1183,7 +1183,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (!visibleIds.contains(ride.id)) continue;
 
       if (_portalSymbols.containsKey(ride.id)) {
-        // Symbol exists → update position (in case data changed)
+        // Symbol exists -> update position (in case data changed)
         try {
           await _mapController!.updateSymbol(
             _portalSymbols[ride.id]!,
@@ -1192,21 +1192,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           );
         } catch (e) {
-          debugPrint('⚠️ Failed to update portal ${ride.id}: $e');
+          debugPrint('⚠️ Failed to update portal : ');
         }
       } else {
-        // New ride → add symbol
+        // New ride -> add symbol
         try {
           final symbol = await _mapController!.addSymbol(SymbolOptions(
             geometry: LatLng(ride.lat, ride.lng),
             iconImage: 'portal-icon',
-            iconSize: 0.85, // INCREASED FROM 0.5
+            iconSize: 1.1, // Increased from 0.85 for better visibility
             iconAnchor: 'center',
           ));
           _portalSymbols[ride.id] = symbol;
-          debugPrint('🔮 Portal placed for ride ${ride.id} → ${ride.destination}');
+          debugPrint('🔮 Portal placed for ride  -> ');
         } catch (e) {
-          debugPrint('❌ Failed to add portal ${ride.id}: $e');
+          debugPrint('❌ Failed to add portal : ');
         }
       }
     }
@@ -1545,7 +1545,7 @@ Widget _buildExploreModeIndicator() {
   }
 
   void _showRatingDialog(String targetUid, String targetName, {bool isPassengerRatingHost = false, SharingPoint? rideToLeave}) {
-    int _rating = 0;
+    int ratingValue = 0;
     showDialog(
       context: context,
       builder: (ctx) {
@@ -1568,18 +1568,18 @@ Widget _buildExploreModeIndicator() {
                       children: List.generate(5, (index) {
                         return IconButton(
                           icon: Icon(
-                            index < _rating ? Icons.star : Icons.star_border,
-                            color: index < _rating ? Colors.amber : Colors.white24, size: 40,
+                            index < ratingValue ? Icons.star : Icons.star_border,
+                            color: index < ratingValue ? Colors.amber : Colors.white24, size: 40,
                           ),
-                          onPressed: () => setDialogState(() => _rating = index + 1),
+                          onPressed: () => setDialogState(() => ratingValue = index + 1),
                         );
                       }),
                     ),
                     const SizedBox(height: 24),
                     ElevatedButton(
-                      onPressed: _rating > 0 ? () async {
+                      onPressed: ratingValue > 0 ? () async {
                         Navigator.pop(context);
-                        await _submitRating(targetUid, _rating);
+                        await _submitRating(targetUid, ratingValue);
                         if (isPassengerRatingHost && rideToLeave != null) {
                            _leaveRideAfterArrival(rideToLeave);
                         }
@@ -2245,69 +2245,73 @@ Widget _buildExploreModeIndicator() {
   // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    // Loading screen
-    if (_isLoading || _currentPosition == null || _mapStyleJson == null) {
-      return Scaffold(
-        backgroundColor: const Color(0xFF1A1A2E),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 120, height: 120,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      Colors.greenAccent.withValues(alpha: 0.8),
-                      Colors.greenAccent.withValues(alpha: 0.2),
-                      Colors.transparent,
-                    ],
-                  ),
-                ),
-                child: const Center(
-                  child: Icon(Icons.explore, size: 60, color: Colors.greenAccent),
+  // Loading screen
+  if (_isLoading || _currentPosition == null || _mapStyleJson == null) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 120, height: 120,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppColors.primary.withValues(alpha: 0.8),
+                    AppColors.primary.withValues(alpha: 0.2),
+                    Colors.transparent,
+                  ],
                 ),
               ),
-              const SizedBox(height: 30),
-              const Text(
-                'GeoRide',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2),
+              child: const Center(
+                child: Icon(Icons.explore, size: 60, color: AppColors.primary),
               ),
+            ),
+            const SizedBox(height: 30),
+            Text(
+              'GeoRide',
+              style: AppTypography.displayLarge.copyWith(
+                letterSpacing: 2,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _loadingMessage,
+              textAlign: TextAlign.center,
+              style: AppTypography.bodyMedium.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 24),
+            if (_isLoading)
+              SizedBox(
+                width: 40, height: 40,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary.withValues(alpha: 0.8)),
+                ),
+              ),
+            if (!_isLoading && _currentPosition == null) ...[
               const SizedBox(height: 16),
-              Text(
-                _loadingMessage,
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: Colors.white.withValues(alpha: 0.7)),
+              ElevatedButton.icon(
+                onPressed: () {
+                  setState(() { _isLoading = true; _loadingMessage = 'Retrying...'; });
+                  _initLocation();
+                },
+                icon: const Icon(Icons.refresh),
+                label: Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary, foregroundColor: Colors.black,
+                ),
               ),
-              const SizedBox(height: 24),
-              if (_isLoading)
-                SizedBox(
-                  width: 40, height: 40,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.greenAccent.withValues(alpha: 0.8)),
-                  ),
-                ),
-              if (!_isLoading && _currentPosition == null) ...[
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    setState(() { _isLoading = true; _loadingMessage = 'Retrying...'; });
-                    _initLocation();
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Retry'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.greenAccent, foregroundColor: Colors.black,
-                  ),
-                ),
-              ],
             ],
-          ),
+          ],
         ),
-      );
-    }
+      ),
+    );
+  }
 
      // Main map screen
      return Scaffold(
@@ -2334,124 +2338,127 @@ Widget _buildExploreModeIndicator() {
            // ─── EXPLORE MODE INDICATOR ───────────────────────────────
            _buildExploreModeIndicator(),
 
-          // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
-          if (_myCurrentRide != null)
-            _buildActiveRideHUD()
-          else
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 8,
-            left: 16, right: 16,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.3), width: 1),
-              ),
-              child: Row(
-                children: [
-                  GestureDetector(
-                    onTap: _showProfileSheet,
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.greenAccent.withValues(alpha: 0.2),
-                      ),
-                      child: const Icon(Icons.account_circle, color: Colors.greenAccent, size: 24),
-                    ),
+            // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
+            if (_myCurrentRide != null)
+              _buildActiveRideHUD()
+            else
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 8,
+                left: 16, right: 16,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: AppColors.primary.withValues(alpha: 0.3), width: 1),
                   ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'GeoRide',
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-                  ),
-                  const Spacer(),
-                  // Active rides count
-                  if (_activeRides.isNotEmpty) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.orangeAccent.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.local_taxi, color: Colors.orangeAccent, size: 14),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${_activeRides.length}',
-                            style: const TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                  child: Row(
+                    children: [
+                      GestureDetector(
+                        onTap: _showProfileSheet,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: AppColors.primary.withValues(alpha: 0.2),
                           ),
-                        ],
+                          child: const Icon(Icons.account_circle, color: AppColors.primary, size: 24),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  Icon(
-                    _is3DMode ? Icons.view_in_ar : Icons.map,
-                    color: Colors.greenAccent.withValues(alpha: 0.7), size: 18,
+                      const SizedBox(width: 8),
+                      Text(
+                        'GeoRide',
+                        style: AppTypography.titleMedium.copyWith(
+                          color: AppColors.textPrimary,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                      const Spacer(),
+                      // Active rides count
+                      if (_activeRides.isNotEmpty) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.warning.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.local_taxi, color: AppColors.warning, size: 14),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${_activeRides.length}',
+                                style: TextStyle(color: AppColors.warning, fontSize: 12, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Icon(
+                        _is3DMode ? Icons.view_in_ar : Icons.map,
+                        color: AppColors.primary.withValues(alpha: 0.7), size: 18,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _is3DMode ? '3D' : '2D',
+                        style: TextStyle(color: AppColors.primary.withValues(alpha: 0.7), fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _is3DMode ? '3D' : '2D',
-                    style: TextStyle(color: Colors.greenAccent.withValues(alpha: 0.7), fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
 
-          // ─── FABs (bottom-right) ───────────────────────────────────
-          Positioned(
-            right: 16,
-            bottom: _myCurrentRide != null ? 180 : 100,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_myCurrentRide == null) ...[
-                  // AR Navigation Mode FAB
+            // ─── FABs (bottom-right) ───────────────────────────────────
+            Positioned(
+              right: 16,
+              bottom: _myCurrentRide != null ? 180 : 100,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_myCurrentRide == null) ...[
+                    // AR Navigation Mode FAB
+                    _buildFab(
+                      heroTag: 'ar_nav_mode',
+                      icon: Icons.near_me,
+                      tooltip: 'Start Journey',
+                      onPressed: () => setState(() => _isArNavMode = true),
+                      color: AppColors.accent1,
+                      mini: false,
+                    ),
+                    const SizedBox(height: 12),
+                    // Host Ride FAB
+                    _buildFab(
+                      heroTag: 'host_ride',
+                      icon: Icons.add_circle,
+                      tooltip: 'Host a Ride',
+                      onPressed: _showHostRideDialog,
+                      color: AppColors.cta,
+                      mini: false,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  // 3D/2D toggle
                   _buildFab(
-                    heroTag: 'ar_nav_mode',
-                    icon: Icons.near_me,
-                    tooltip: 'Start Journey',
-                    onPressed: () => setState(() => _isArNavMode = true),
-                    color: Colors.cyanAccent,
-                    mini: false,
+                    heroTag: 'toggle_3d',
+                    icon: _is3DMode ? Icons.layers : Icons.map,
+                    tooltip: _is3DMode ? 'Switch to 2D' : 'Switch to 3D',
+                    onPressed: _toggle3DMode,
+                    color: AppColors.primary,
                   ),
                   const SizedBox(height: 12),
-                  // Host Ride FAB
+                   // My Location
                   _buildFab(
-                    heroTag: 'host_ride',
-                    icon: Icons.add_circle,
-                    tooltip: 'Host a Ride',
-                    onPressed: _showHostRideDialog,
-                    color: Colors.pinkAccent,
-                    mini: false,
+                    heroTag: 'my_location',
+                    icon: _isUserExploringMap ? Icons.my_location : Icons.my_location_outlined,
+                    tooltip: 'My Location',
+                    onPressed: _goToMyLocation,
+                    color: _isUserExploringMap ? AppColors.primary : AppColors.accent1,
                   ),
-                const SizedBox(height: 12),
                 ],
-                // 3D/2D toggle
-                _buildFab(
-                  heroTag: 'toggle_3d',
-                  icon: _is3DMode ? Icons.layers : Icons.map,
-                  tooltip: _is3DMode ? 'Switch to 2D' : 'Switch to 3D',
-                  onPressed: _toggle3DMode,
-                  color: Colors.greenAccent,
-                ),
-                const SizedBox(height: 12),
-                 // My Location
-                 _buildFab(
-                   heroTag: 'my_location',
-                   icon: _isUserExploringMap ? Icons.my_location : Icons.my_location_outlined,
-                   tooltip: 'My Location',
-                   onPressed: _goToMyLocation,
-                   color: _isUserExploringMap ? Colors.greenAccent : Colors.cyanAccent,
-                 ),
-              ],
+              ),
             ),
-          ),
 
           // ─── GPS COORDS (debug) ────────────────────────────────────
           Positioned(
@@ -2521,7 +2528,7 @@ Widget _buildExploreModeIndicator() {
       ),
       child: FloatingActionButton(
         heroTag: heroTag, mini: mini,
-        backgroundColor: mini ? Colors.black.withValues(alpha: 0.7) : color,
+        backgroundColor: mini ? AppColors.surface.withValues(alpha: 0.7) : color,
         foregroundColor: mini ? color : Colors.white,
         elevation: 0, onPressed: onPressed, tooltip: tooltip,
         child: Icon(icon, size: mini ? 20 : 26),
@@ -3148,7 +3155,7 @@ class _PassengerRatingHostForm extends StatefulWidget {
 }
 
 class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
-  int _rating = 0;
+  int ratingValue = 0;
   bool _isSaving = false;
 
   @override
@@ -3168,14 +3175,14 @@ class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
            mainAxisAlignment: MainAxisAlignment.center,
            children: List.generate(5, (index) {
               return IconButton(
-                 icon: Icon(index < _rating ? Icons.star : Icons.star_border, color: index < _rating ? Colors.amber : Colors.white24, size: 40),
-                 onPressed: () => setState(() => _rating = index + 1),
+                 icon: Icon(index < ratingValue ? Icons.star : Icons.star_border, color: index < ratingValue ? Colors.amber : Colors.white24, size: 40),
+                 onPressed: () => setState(() => ratingValue = index + 1),
               );
            }),
         ),
         const SizedBox(height: 24),
         ElevatedButton.icon(
-           onPressed: _rating > 0 ? () async {
+           onPressed: ratingValue > 0 ? () async {
               setState(() => _isSaving = true);
               try {
                 // Submit rating to host
@@ -3183,15 +3190,15 @@ class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
                 await FirebaseFirestore.instance.runTransaction((transaction) async {
                   final snapshot = await transaction.get(docRef);
                   if (!snapshot.exists) {
-                    transaction.set(docRef, {'displayName': 'Host', 'safetyRating': _rating.toDouble(), 'ratingCount': 1, 'ratingSum': _rating});
+                    transaction.set(docRef, {'displayName': 'Host', 'safetyRating': ratingValue.toDouble(), 'ratingCount': 1, 'ratingSum': ratingValue});
                   } else {
                     final data = snapshot.data()!;
                     final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
                     final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
                     transaction.update(docRef, {
                       'ratingCount': count + 1,
-                      'ratingSum': sum + _rating,
-                      'safetyRating': (sum + _rating) / (count + 1),
+                      'ratingSum': sum + ratingValue,
+                      'safetyRating': (sum + ratingValue) / (count + 1),
                     });
                   }
                 });

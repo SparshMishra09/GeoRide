@@ -16,7 +16,7 @@ class RTDBService {
     const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
     double minLat = -90, maxLat = 90, minLng = -180, maxLng = 180;
     final buffer = StringBuffer();
-    int bits = 0, bitsTotal = 0, hashValue = 0;
+    int bits = 0, hashValue = 0;
     bool isEven = true;
 
     while (buffer.length < precision) {

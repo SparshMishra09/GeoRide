@@ -28,5 +28,28 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    - family: ChakraPetch
+      fonts:
+        - asset: assets/fonts/ChakraPetch-Light.ttf
+          weight: 300
+        - asset: assets/fonts/ChakraPetch-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/ChakraPetch-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/ChakraPetch-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/ChakraPetch-Bold.ttf
+          weight: 700
+    - family: RussoOne
+      fonts:
+        - asset: assets/fonts/RussoOne-Regular.ttf
+          weight: 400
   assets:
     - assets/style.json
+    - assets/fonts/ChakraPetch-Light.ttf
+    - assets/fonts/ChakraPetch-Regular.ttf
+    - assets/fonts/ChakraPetch-Medium.ttf
+    - assets/fonts/ChakraPetch-SemiBold.ttf
+    - assets/fonts/ChakraPetch-Bold.ttf
+    - assets/fonts/RussoOne-Regular.ttf

@@ -68,6 +68,12 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
   bool _isPickingOnMap = false;
   bool _isFocusingOrigin = false; // true = origin field, false = destination field
 
+  // Ride hosting options
+  int _selectedSeats = 3;
+  int _selectedWaitMinutes = 15;
+  final List<int> _seatOptions = [1, 2, 3, 4];
+  final List<int> _waitOptions = [5, 10, 15, 30];
+
   // Navigation/Lobby state
   OsrmRoute? _currentRoute;
   List<CorridorRider> _nearbyRiders = [];
@@ -416,8 +422,8 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
             left: 30,
             child: FloatingActionButton(
               backgroundColor: Colors.redAccent,
-              child: const Icon(Icons.close, color: Colors.white),
               onPressed: widget.onExit,
+              child: const Icon(Icons.close, color: Colors.white),
             ),
           ),
           
@@ -439,7 +445,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
       decoration: BoxDecoration(
         color: Colors.cyanAccent,
         borderRadius: BorderRadius.circular(30),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10)],
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 10)],
       ),
       child: Row(
         children: [
@@ -460,6 +466,70 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     );
   }
 
+  Widget _buildSeatsSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('SEATS AVAILABLE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        const SizedBox(height: 8),
+        Row(
+          children: _seatOptions.map((seats) {
+            final isSelected = _selectedSeats == seats;
+            return Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _selectedSeats = seats),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isSelected ? Colors.cyanAccent : Colors.white.withValues(alpha: 0.05),
+                    borderRadius: BorderRadius.circular(12),
+                    border: isSelected ? null : Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                  ),
+                  child: Center(
+                    child: Text('$seats', style: TextStyle(color: isSelected ? Colors.black : Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWaitTimeSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('WAIT TIME', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        const SizedBox(height: 8),
+        Row(
+          children: _waitOptions.map((mins) {
+            final isSelected = _selectedWaitMinutes == mins;
+            return Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _selectedWaitMinutes = mins),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isSelected ? Colors.cyanAccent : Colors.white.withValues(alpha: 0.05),
+                    borderRadius: BorderRadius.circular(12),
+                    border: isSelected ? null : Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                  ),
+                  child: Center(
+                    child: Text('${mins}m', style: TextStyle(color: isSelected ? Colors.black : Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
   Widget _buildFloatingSearchCard() {
     if (_isPickingOnMap) return const SizedBox.shrink();
 
@@ -469,9 +539,9 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.7),
+            color: Colors.black.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
+            border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.3)),
           ),
           child: Column(
             children: [
@@ -498,7 +568,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
             margin: const EdgeInsets.only(top: 8),
             constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.4),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.85),
+              color: Colors.black.withValues(alpha: 0.85),
               borderRadius: BorderRadius.circular(20),
             ),
             child: _isSearching 
@@ -512,7 +582,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
                     return ListTile(
                       dense: true,
                       title: Text(result.displayName, style: const TextStyle(color: Colors.white, fontSize: 13)),
-                      subtitle: Text(result.country, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)),
+                      subtitle: Text(result.country, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11)),
                       onTap: () => _handleSearchResultTap(result),
                     );
                   },
@@ -520,17 +590,33 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
           ),
           
         if (_origin != null && _destination != null && _searchResults.isEmpty && !_isSearching)
-          Padding(
-            padding: const EdgeInsets.only(top: 10),
-            child: ElevatedButton(
-              onPressed: _startRouting,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
-                foregroundColor: Colors.black,
-                minimumSize: const Size(double.infinity, 50),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-              ),
-              child: const Text("Confirm Route", style: TextStyle(fontWeight: FontWeight.bold)),
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.1)),
+            ),
+            child: Column(
+              children: [
+                _buildSeatsSelector(),
+                const SizedBox(height: 16),
+                _buildWaitTimeSelector(),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: _startRouting,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.cyanAccent,
+                    foregroundColor: Colors.black,
+                    minimumSize: const Size(double.infinity, 50),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                    elevation: 10,
+                    shadowColor: Colors.cyanAccent.withValues(alpha: 0.3),
+                  ),
+                  child: const Text("CREATE RIDE & CONFIRM", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+                ),
+              ],
             ),
           ),
       ],
@@ -545,7 +631,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     required IconData icon,
     required bool isOrigin,
   }) {
-    return Container(
+    return SizedBox(
       height: 45,
       child: TextField(
         controller: controller,
@@ -557,7 +643,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
         style: const TextStyle(color: Colors.white, fontSize: 14),
         decoration: InputDecoration(
           hintText: label,
-          hintStyle: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 13),
+          hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 13),
           prefixIcon: Icon(icon, color: Colors.cyanAccent, size: 18),
           suffixIcon: IconButton(
             icon: const Icon(Icons.add_location_alt, color: Colors.cyanAccent, size: 18),
@@ -570,7 +656,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
           ),
           contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 15),
           filled: true,
-          fillColor: Colors.white.withOpacity(0.05),
+          fillColor: Colors.white.withValues(alpha: 0.05),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(15),
             borderSide: BorderSide.none,
@@ -622,6 +708,25 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
         'sourceLng': _origin!.lng,
         'destLat': _destination!.lat,
         'destLng': _destination!.lng,
+      });
+
+      // 2. Create SharingPoint doc (for general map discovery)
+      final now = DateTime.now();
+      final expiresAt = now.add(Duration(minutes: _selectedWaitMinutes));
+      
+      await FirebaseFirestore.instance.collection('sharing_points').add({
+        'creatorId': user.uid,
+        'lat': _origin!.lat,
+        'lng': _origin!.lng,
+        'destination': _destination?.displayName ?? 'Unknown',
+        'seatsAvailable': _selectedSeats,
+        'totalSeats': _selectedSeats,
+        'status': 'active',
+        'createdAt': FieldValue.serverTimestamp(),
+        'expiresAt': Timestamp.fromDate(expiresAt),
+        'passengers': [],
+        'arrivedPassengers': [],
+        'routeId': routeRef.id, // Linked to the calculated route
       });
 
       if (mounted) {
@@ -952,7 +1057,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.85),
+        color: Colors.black.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.3)),
         boxShadow: [
@@ -1001,7 +1106,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     if (_isSearching) {
       return Container(
         height: 100,
-        decoration: BoxDecoration(color: Colors.black.withOpacity(0.8), borderRadius: BorderRadius.circular(20)),
+        decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.8), borderRadius: BorderRadius.circular(20)),
         child: const Center(child: CircularProgressIndicator(color: Colors.cyanAccent)),
       );
     }
@@ -1011,7 +1116,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
       return Container(
         padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.9),
+          color: Colors.black.withValues(alpha: 0.9),
           borderRadius: BorderRadius.circular(25),
           border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.3)),
           boxShadow: [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.1), blurRadius: 20)],
@@ -1049,7 +1154,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.9),
+        color: Colors.black.withValues(alpha: 0.9),
         borderRadius: BorderRadius.circular(25),
         border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.2)),
         boxShadow: [BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.1), blurRadius: 20)],
@@ -1232,7 +1337,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.85),
+        color: Colors.black.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5), width: 2),
         boxShadow: [
@@ -1296,13 +1401,13 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
               widget.onToggleOverview!(_currentRoute!.points);
             }
           },
-          backgroundColor: Colors.black.withOpacity(0.7),
+          backgroundColor: Colors.black.withValues(alpha: 0.7),
           child: const Icon(Icons.layers, color: Colors.cyanAccent),
         ),
         const SizedBox(height: 8),
         Container(
           padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), shape: BoxShape.circle),
+          decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.7), shape: BoxShape.circle),
           child: const Icon(Icons.explore, color: Colors.cyanAccent, size: 20),
         ),
       ],
@@ -1347,7 +1452,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
                Container(
                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                  decoration: BoxDecoration(
-                   color: Colors.black.withOpacity(0.9),
+                   color: Colors.black.withValues(alpha: 0.9),
                    borderRadius: BorderRadius.circular(30),
                    border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5)),
                  ),
@@ -1405,9 +1510,11 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
           // Map not ready yet; skip this rider
         }
       }
-      if (mounted) setState(() => _riderScreenPositions
-        ..clear()
-        ..addAll(updated));
+      if (mounted) {
+        setState(() => _riderScreenPositions
+          ..clear()
+          ..addAll(updated));
+      }
     });
   }
 
@@ -1440,7 +1547,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.8),
+                      color: Colors.black.withValues(alpha: 0.8),
                       borderRadius: BorderRadius.circular(15),
                       border: Border.all(color: Colors.cyanAccent, width: 2),
                       boxShadow: [
