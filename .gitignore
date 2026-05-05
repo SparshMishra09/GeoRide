@@ -49,3 +49,4 @@ app.*.map.json
 graphify-out/
 .opencode/
 opencode.json
+.worktrees/
