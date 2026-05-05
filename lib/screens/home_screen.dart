@@ -2249,7 +2249,7 @@ Widget _buildExploreModeIndicator() {
            _buildExploreModeIndicator(),
 
             // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
-            if (_myCurrentRide != null)
+            if (_myCurrentRide != null && !_isArNavMode)
               _buildActiveRideHUD()
             else
               Positioned(
@@ -2381,7 +2381,7 @@ Widget _buildExploreModeIndicator() {
           ),
 
           // ─── ACTIVE RIDE BOTTOM PANEL ──────────────────────────────
-          if (_myCurrentRide != null)
+          if (_myCurrentRide != null && !_isArNavMode)
             _buildActiveRideBottomPanel(),
 
           // ─── PHASE 10: SYNCHRONOUS RATING ──────────────────────────
