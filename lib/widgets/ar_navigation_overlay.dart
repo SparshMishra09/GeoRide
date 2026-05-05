@@ -13,6 +13,206 @@ import '../services/corridor_service.dart';
 import '../services/rtdb_service.dart';
 import 'direction_arrow_painter.dart';
 
+class _ArRideChatSheet extends StatefulWidget {
+  final String rideId;
+  const _ArRideChatSheet({required this.rideId});
+
+  @override
+  State<_ArRideChatSheet> createState() => _ArRideChatSheetState();
+}
+
+class _ArRideChatSheetState extends State<_ArRideChatSheet> {
+  final _messageController = TextEditingController();
+  final _scrollController = ScrollController();
+
+  Future<void> _sendMessage() async {
+    final text = _messageController.text.trim();
+    if (text.isEmpty) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final messagesRef = FirebaseFirestore.instance
+        .collection('sharing_points')
+        .doc(widget.rideId)
+        .collection('messages');
+
+    _messageController.clear();
+    await messagesRef.add({
+      'senderId': user.uid,
+      'senderName': user.displayName ?? 'Trainer',
+      'text': text,
+      'timestamp': FieldValue.serverTimestamp(),
+      'isSystem': false,
+    });
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+   @override
+   Widget build(BuildContext context) {
+     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+     final currentUid = FirebaseAuth.instance.currentUser?.uid;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7 + bottomInset,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.chat_bubble, color: Colors.greenAccent),
+                const SizedBox(width: 8),
+                const Text('Ride Chat', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white70),
+                  onPressed: () => Navigator.pop(context),
+                )
+              ],
+            ),
+          ),
+
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('sharing_points')
+                  .doc(widget.rideId)
+                  .collection('messages')
+                  .orderBy('timestamp', descending: false)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator(color: Colors.greenAccent));
+                }
+
+                 final docs = snapshot.data!.docs;
+
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (_scrollController.hasClients) {
+                    _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+                  }
+                });
+
+                if (docs.isEmpty) {
+                  return const Center(
+                    child: Text('No messages yet. Say hello!', style: TextStyle(color: Colors.white54)),
+                  );
+                }
+
+                return ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(16),
+                  itemCount: docs.length,
+                  itemBuilder: (context, index) {
+                    final data = docs[index].data() as Map<String, dynamic>;
+                    final isSystem = data['isSystem'] ?? false;
+                    final isMe = data['senderId'] == currentUid;
+
+                    if (isSystem) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Center(
+                          child: Text(
+                            data['text'] ?? '',
+                            style: const TextStyle(color: Colors.orangeAccent, fontStyle: FontStyle.italic, fontSize: 13),
+                          ),
+                        ),
+                      );
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: isMe ? Colors.greenAccent.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(16).copyWith(
+                              bottomRight: isMe ? const Radius.circular(0) : const Radius.circular(16),
+                              bottomLeft: !isMe ? const Radius.circular(0) : const Radius.circular(16),
+                            ),
+                            border: Border.all(
+                              color: isMe ? Colors.greenAccent.withValues(alpha: 0.3) : Colors.transparent,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (!isMe)
+                                Text(
+                                  data['senderName'] ?? 'Unknown',
+                                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                              Text(data['text'] ?? '', style: const TextStyle(color: Colors.white, fontSize: 15)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            color: Colors.black.withValues(alpha: 0.3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _messageController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      hintText: 'Type a message...',
+                      hintStyle: const TextStyle(color: Colors.white54),
+                      filled: true,
+                      fillColor: Colors.black.withValues(alpha: 0.4),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                    ),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendMessage(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.greenAccent,
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    icon: const Icon(Icons.send, color: Colors.black),
+                    onPressed: _sendMessage,
+                  ),
+                ),
+              ],
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
 enum NavState { search, lobby, navigation }
 
 class ArNavigationOverlay extends StatefulWidget {
@@ -1416,7 +1616,16 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
 
   Widget _buildChatButton() {
     return FloatingActionButton(
-      onPressed: () {},
+      onPressed: () {
+        if (_currentRouteId != null) {
+          showModalBottomSheet(
+            context: context,
+            backgroundColor: Colors.transparent,
+            isScrollControlled: true,
+            builder: (ctx) => _ArRideChatSheet(rideId: _currentRouteId!),
+          );
+        }
+      },
       backgroundColor: Colors.cyanAccent,
       child: const Icon(Icons.chat_bubble, color: Colors.black),
     );
