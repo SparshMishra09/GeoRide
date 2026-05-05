@@ -373,12 +373,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   String _loadingMessage = 'Getting your location...';
 
   // ---------------------------------------------------------------------------
-  // Phase 2: Ride hosting state
-  // ---------------------------------------------------------------------------
-  bool _isCreatingRide = false;
-
-  // ---------------------------------------------------------------------------
-  // Phase 3: Portal rendering state
+  // Phase 2: Portal rendering state
   // ---------------------------------------------------------------------------
   List<SharingPoint> _activeRides = [];
   final Map<String, Symbol> _portalSymbols = {};
@@ -1662,30 +1657,7 @@ Widget _buildExploreModeIndicator() {
   }
 
   // ===========================================================================
-  // PHASE 2: RIDE HOSTING
-  // ===========================================================================
-
-  Future<bool> _isAlreadyHosting() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
-    final query = await FirebaseFirestore.instance
-        .collection('sharing_points')
-        .where('creatorId', isEqualTo: user.uid)
-        .where('status', whereIn: ['active', 'full', 'ongoing'])
-        .get();
-    return query.docs.isNotEmpty;
-  }
-
-  Future<bool> _isAlreadyPassenger() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
-    final query = await FirebaseFirestore.instance
-        .collection('sharing_points')
-        .where('passengers', arrayContains: user.uid)
-        .where('status', whereIn: ['active', 'full', 'ongoing'])
-        .get();
-    return query.docs.isNotEmpty;
-  }
+  // PHASE 2:
 
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
