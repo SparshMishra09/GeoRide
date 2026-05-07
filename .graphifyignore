@@ -1,0 +1,23 @@
+# Graphify Ignore Patterns
+# Ignore platform-specific boilerplate and generated files to keep the graph focused on app logic.
+
+android/
+ios/
+linux/
+macos/
+windows/
+web/
+.dart_tool/
+.pub/
+.pub-cache/
+build/
+coverage/
+
+# Keep only the source code and docs
+!lib/
+!README.md
+!pubspec.yaml
+!analysis_options.yaml
+!GEORIDE_BUILD_GUIDE.md
+!GeoRide_AR_Implementation_Guide.md
+!docs/

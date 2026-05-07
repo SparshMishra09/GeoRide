@@ -292,6 +292,8 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
   bool _awaitingSameRouteAcceptance = false; // Rider waiting for host to accept same-route match
   String? _currentRouteId;
   String? _matchedRiderId;
+  String? _sharingPointId;
+  StreamSubscription? _sharingPointSub;
   List<String> _passengers = [];
   final Map<String, Point> _riderScreenPositions = {};
   int _currentWaypointIndex = 0;
@@ -517,6 +519,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     _hostPendingSubscription?.cancel();
     _riderCorridorSubscription?.cancel();
     _riderAcceptedSubscription?.cancel();
+    _sharingPointSub?.cancel();
     _lobbyTimeoutTimer?.cancel();
     _screenPositionRefreshTimer?.cancel();
     widget.mapTapNotifier.removeListener(_onMapTapChanged);
@@ -915,7 +918,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
       final now = DateTime.now();
       final expiresAt = now.add(Duration(minutes: _selectedWaitMinutes));
       
-      await FirebaseFirestore.instance.collection('sharing_points').add({
+      final sharingDocRef = await FirebaseFirestore.instance.collection('sharing_points').add({
         'creatorId': user.uid,
         'lat': _origin!.lat,
         'lng': _origin!.lng,
@@ -933,6 +936,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
       if (mounted) {
         setState(() {
           _currentRouteId = routeRef.id;
+          _sharingPointId = sharingDocRef.id;
           _matchedRiderId = null;
           _awaitingSameRouteAcceptance = false;
           _currentRoute = route;
@@ -987,6 +991,25 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
       displayName: user.displayName ?? 'Rider',
       force: true,
     );
+
+    // 1b. Listen to Sharing Point for passenger updates
+    if (_sharingPointId != null) {
+      _sharingPointSub?.cancel();
+      _sharingPointSub = FirebaseFirestore.instance
+          .collection('sharing_points')
+          .doc(_sharingPointId)
+          .snapshots()
+          .listen((snap) {
+        if (snap.exists && mounted) {
+          final data = snap.data();
+          if (data != null && data['passengers'] != null) {
+            setState(() {
+              _passengers = List<String>.from(data['passengers']);
+            });
+          }
+        }
+      });
+    }
 
     // 2. Corridor scanner — scans RTDB for nearby riders on my polyline
     _rtdbSubscription?.cancel();
@@ -1069,13 +1092,28 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
     });
   }
 
+  /// Cancels the hosted ride
+  Future<void> _cancelRide() async {
+    if (_sharingPointId != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('sharing_points')
+            .doc(_sharingPointId)
+            .update({'status': 'expired'});
+      } catch (e) {
+        debugPrint('Error cancelling ride: $e');
+      }
+    }
+    widget.onExit();
+  }
+
   /// Removes a passenger from the current ride.
   Future<void> _kickPassenger(String passengerId) async {
-    if (_currentRouteId == null) return;
+    if (_sharingPointId == null) return;
     try {
       await FirebaseFirestore.instance
           .collection('sharing_points')
-          .doc(_currentRouteId)
+          .doc(_sharingPointId)
           .update({
         'passengers': FieldValue.arrayRemove([passengerId]),
       });
@@ -1467,13 +1505,13 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: widget.onExit,
+                  onPressed: _sharingPointId != null ? _cancelRide : widget.onExit,
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: Colors.redAccent),
                     padding: const EdgeInsets.symmetric(vertical: 15),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                   ),
-                  child: const Text("CANCEL", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                  child: Text(_sharingPointId != null ? "CANCEL RIDE" : "CANCEL", style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
                 ),
               ),
               const SizedBox(width: 15),
@@ -1492,7 +1530,7 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
               ),
             ],
           ),
-          if (_matchedRiderId == FirebaseAuth.instance.currentUser?.uid && _passengers.isNotEmpty)
+          if (_sharingPointId != null && _passengers.isNotEmpty)
             Column(
               children: [
                 const SizedBox(height: 16),
@@ -1769,6 +1807,23 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
             ),
           ),
         ),
+
+        // Manage Ride Button
+        if (_sharingPointId != null)
+          Positioned(
+            bottom: 40,
+            right: 20,
+            child: ElevatedButton.icon(
+              onPressed: _showManageRideSheet,
+              icon: const Icon(Icons.manage_accounts, color: Colors.black),
+              label: const Text("MANAGE", style: TextStyle(fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.cyanAccent,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -1985,6 +2040,83 @@ class _ArNavigationOverlayState extends State<ArNavigationOverlay> {
             scale: CurvedAnimation(parent: anim1, curve: Curves.easeOutBack),
             child: child,
           ),
+        );
+      },
+    );
+  }
+
+  void _showManageRideSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A1A2E),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+              ),
+              child: SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text("MANAGE RIDE", style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                    const SizedBox(height: 20),
+                    if (_passengers.isNotEmpty) ...[
+                      const Align(alignment: Alignment.centerLeft, child: Text("PASSENGERS", style: TextStyle(color: Colors.white70, fontSize: 12))),
+                      const SizedBox(height: 10),
+                      ..._passengers.map((p) => ListTile(
+                        leading: const Icon(Icons.person, color: Colors.cyanAccent),
+                        title: Text(p, style: const TextStyle(color: Colors.white)),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
+                          onPressed: () async {
+                            await _kickPassenger(p);
+                            setSheetState(() {});
+                            setState(() {});
+                          },
+                        ),
+                      )).toList(),
+                      const SizedBox(height: 20),
+                    ],
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            if (_sharingPointId != null) {
+                              showModalBottomSheet(
+                                context: context,
+                                isScrollControlled: true,
+                                backgroundColor: Colors.transparent,
+                                builder: (ctx) => _ArRideChatSheet(rideId: _sharingPointId!),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.chat),
+                          label: const Text("Chat"),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent, foregroundColor: Colors.black),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            _cancelRide();
+                          },
+                          icon: const Icon(Icons.cancel),
+                          label: const Text("Cancel Ride"),
+                          style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent, side: const BorderSide(color: Colors.redAccent)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
         );
       },
     );

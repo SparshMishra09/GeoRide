@@ -31,7 +31,6 @@ class RTDBService {
       }
       isEven = !isEven;
       bits++;
-      bitsTotal++;
       if (bits == 5) {
         buffer.write(base32[hashValue]);
         bits = 0;

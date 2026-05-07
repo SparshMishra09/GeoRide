@@ -32,6 +32,21 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+# pubspec.lock
+
+# Platform-specific Ephemeral files
+**/android/app/src/main/java/io/flutter/plugins/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/ephemeral/
+**/linux/flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+**/windows/flutter/ephemeral/
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/android/app/src/main/kotlin/com/example/georide/MainActivity.kt  # Only if it's purely boilerplate and you want to skip it
 
 # Symbolication related
 app.*.symbols
@@ -50,3 +65,8 @@ graphify-out/
 .opencode/
 opencode.json
 .worktrees/
+.gemini/
+.grill/
+
+# Android build artifacts
+/android/build/

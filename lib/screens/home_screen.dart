@@ -2246,12 +2246,12 @@ Widget _buildExploreModeIndicator() {
            ),
            
            // ─── EXPLORE MODE INDICATOR ───────────────────────────────
-           _buildExploreModeIndicator(),
+           if (!_isArNavMode) _buildExploreModeIndicator(),
 
             // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
             if (_myCurrentRide != null && !_isArNavMode)
               _buildActiveRideHUD()
-            else
+            else if (!_isArNavMode)
               Positioned(
                 top: MediaQuery.of(context).padding.top + 8,
                 left: 16, right: 16,
@@ -2321,6 +2321,7 @@ Widget _buildExploreModeIndicator() {
               ),
 
             // ─── FABs (bottom-right) ───────────────────────────────────
+            if (!_isArNavMode)
             Positioned(
               right: 16,
               bottom: _myCurrentRide != null ? 180 : 100,
@@ -2361,6 +2362,7 @@ Widget _buildExploreModeIndicator() {
             ),
 
           // ─── GPS COORDS (debug) ────────────────────────────────────
+          if (!_isArNavMode)
           Positioned(
             bottom: 24, left: 16,
             child: Container(

@@ -39,7 +39,7 @@ class GeoRideApp extends StatelessWidget {
             );
           }
           if (snapshot.hasData && snapshot.data != null) {
-            return const HomeScreen();
+            return HomeScreen();
           }
           return const AuthScreen();
         },
