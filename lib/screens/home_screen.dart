@@ -28,12 +28,17 @@ class SharingPoint {
   final DateTime expiresAt;
   final List<String> passengers;
   final List<String> arrivedPassengers;
+  final List<String> ratedBy; // UIDs that have submitted their rating
+  final double? toLat;
+  final double? toLng;
 
   SharingPoint({
     required this.id, required this.creatorId, required this.lat,
     required this.lng, required this.destination, required this.seatsAvailable,
     required this.totalSeats, required this.status, required this.createdAt,
     required this.expiresAt, required this.passengers, required this.arrivedPassengers,
+    required this.ratedBy,
+    this.toLat, this.toLng,
   });
 
   bool get isExpired => DateTime.now().isAfter(expiresAt);
@@ -63,6 +68,9 @@ class SharingPoint {
       createdAt: createdAt, expiresAt: expiresAt,
       passengers: List<String>.from(map['passengers'] ?? []),
       arrivedPassengers: List<String>.from(map['arrivedPassengers'] ?? []),
+      ratedBy: List<String>.from(map['ratedBy'] ?? []),
+      toLat: (map['toLat'] as num?)?.toDouble(),
+      toLng: (map['toLng'] as num?)?.toDouble(),
     );
   }
 
@@ -74,6 +82,9 @@ class SharingPoint {
     'expiresAt': Timestamp.fromDate(expiresAt),
     'passengers': passengers,
     'arrivedPassengers': arrivedPassengers,
+    'ratedBy': ratedBy,
+    'toLat': toLat,
+    'toLng': toLng,
   };
 }
 
@@ -324,7 +335,7 @@ class _ChatModalSheetState extends State<_ChatModalSheet> {
 }
 
 // ============================================================================
-// HOME SCREEN — Phase 1 + 2 + 3: Map + Avatar + Hosting + Portals
+// HOME SCREEN â€” Phase 1 + 2 + 3: Map + Avatar + Hosting + Portals
 // ============================================================================
 
 class HomeScreen extends StatefulWidget {
@@ -393,6 +404,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _isFetchingRoute = false;
 
   // ---------------------------------------------------------------------------
+  // Phase 11: Glowing Path (host destination route)
+  // ---------------------------------------------------------------------------
+  Line? _glowLine;   // outer glow layer
+  Line? _glowCore;   // inner bright core layer
+  bool _isDrawingGlow = false;
+
+  // ---------------------------------------------------------------------------
   // Phase 6: Live Passenger Tracking
   // ---------------------------------------------------------------------------
   final Map<String, Symbol> _passengerSymbols = {};
@@ -401,6 +419,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   DateTime? _lastLocationUploadTime;
   bool _hasReachedPortal = false;
   final Set<String> _arrivedPassengers = {};
+
+  // ---------------------------------------------------------------------------
+  // Explore Mode: pauses auto-camera follow when user is panning the map
+  // ---------------------------------------------------------------------------
+  bool _userIsExploring = false;
+  Timer? _exploreTimer;
+  bool _isProgrammaticCameraMove = false; // prevents explore mode during auto-follow
 
   @override
   void initState() {
@@ -417,6 +442,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _ridesStreamSub?.cancel();
     _passengerLocationsSub?.cancel();
     _expiryTimer?.cancel();
+    _exploreTimer?.cancel();
     if (_mapController != null) {
       _mapController!.onSymbolTapped.remove(_onSymbolTapped);
     }
@@ -436,12 +462,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         final styleMap = jsonDecode(response.body) as Map<String, dynamic>;
         _applyPokemonGoTheme(styleMap);
         setState(() => _mapStyleJson = jsonEncode(styleMap));
-        debugPrint('✅ Remote style loaded & themed');
+        debugPrint('âœ… Remote style loaded & themed');
       } else {
         setState(() => _mapStyleJson = 'https://tiles.openfreemap.org/styles/liberty');
       }
     } catch (e) {
-      debugPrint('⚠️ Could not fetch remote style: $e');
+      debugPrint('âš ï¸ Could not fetch remote style: $e');
       setState(() => _mapStyleJson = 'https://tiles.openfreemap.org/styles/liberty');
     }
   }
@@ -533,7 +559,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _positionBuffer.add(position);
       _startPositionStream();
     } catch (e) {
-      debugPrint('❌ Location error: $e');
+      debugPrint('âŒ Location error: $e');
       setState(() {
         _loadingMessage = 'Failed to get location: $e';
         _isLoading = false;
@@ -549,7 +575,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     ).listen(
       _onPositionUpdate,
-      onError: (e) => debugPrint('❌ Position stream error: $e'),
+      onError: (e) => debugPrint('âŒ Position stream error: $e'),
     );
   }
 
@@ -588,7 +614,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     setState(() => _currentPosition = smoothed);
     _updateAvatarPosition(smoothed);
-    _animateCameraToPosition(smoothed);
+    // Only auto-follow camera if user is NOT manually exploring the map
+    if (!_userIsExploring) {
+      _animateCameraToPosition(smoothed);
+    }
 
     if (_myCurrentRide != null && _myCurrentRide!.creatorId != FirebaseAuth.instance.currentUser?.uid) {
       final ride = _myCurrentRide!;
@@ -844,7 +873,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       await _mapController!.addImage('passenger-avatar', passengerBytes);
 
       _imagesRegistered = true;
-      debugPrint('✅ Avatar + Portal + Passenger images registered');
+      debugPrint('âœ… Avatar + Portal + Passenger images registered');
 
       // Retry pending portal updates now that images are registered
       if (_pendingPortalUpdate) {
@@ -857,7 +886,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         _processPassengerSnapshot(_latestPassengerSnapshot!);
       }
     } catch (e) {
-      debugPrint('❌ Failed to register images: $e');
+      debugPrint('âŒ Failed to register images: $e');
     }
   }
 
@@ -876,9 +905,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         iconAnchor: 'center',
       ));
       _avatarCreated = true;
-      debugPrint('✅ Avatar symbol placed');
+      debugPrint('âœ… Avatar symbol placed');
     } catch (e) {
-      debugPrint('❌ Failed to create avatar symbol: $e');
+      debugPrint('âŒ Failed to create avatar symbol: $e');
     }
   }
 
@@ -890,7 +919,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         SymbolOptions(geometry: LatLng(pos.latitude, pos.longitude)),
       );
     } catch (e) {
-      debugPrint('⚠️ Failed to update avatar position: $e');
+      debugPrint('âš ï¸ Failed to update avatar position: $e');
     }
   }
 
@@ -937,23 +966,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           _clearPassengerSymbols();
           _arrivedPassengers.clear();
           _hasReachedPortal = false;
+          // Clear both the passenger route line AND the host glowing path
+          _clearRoute();
+          _clearGlowingPath();
         } else if (myRide.creatorId == user?.uid) {
           _startPassengerLocationsStream(myRide.id);
           if (_latestPassengerSnapshot != null) {
             _processPassengerSnapshot(_latestPassengerSnapshot!);
           }
           
-          // Phase 10: Trigger 'rating_phase' when all expected passengers arrive
-          if (myRide.status != 'rating_phase' && myRide.arrivedPassengers.length == myRide.totalSeats && myRide.totalSeats > 0) {
+          // Phase 10: Trigger 'rating_phase' when ALL joined passengers have arrived
+          // Use passengers.length (actual joined count), not totalSeats (capacity)
+          if (myRide.status != 'rating_phase' &&
+              myRide.passengers.isNotEmpty &&
+              myRide.arrivedPassengers.length >= myRide.passengers.length) {
              FirebaseFirestore.instance.collection('sharing_points').doc(myRide.id).update({
                'status': 'rating_phase'
              });
           }
         }
 
-        debugPrint('📡 Rides stream: ${rides.length} active rides');
+        debugPrint('ðŸ“¡ Rides stream: ${rides.length} active rides');
       },
-      onError: (e) => debugPrint('❌ Rides stream error: $e'),
+      onError: (e) => debugPrint('âŒ Rides stream error: $e'),
     );
   }
 
@@ -964,7 +999,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final before = _activeRides.length;
       _activeRides.removeWhere((ride) => ride.isExpired);
       if (_activeRides.length != before) {
-        debugPrint('⏰ Expiry check: removed ${before - _activeRides.length} expired rides');
+        debugPrint('â° Expiry check: removed ${before - _activeRides.length} expired rides');
         _updatePortalSymbols();
         setState(() {}); // Refresh UI
       }
@@ -990,11 +1025,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         final ride = SharingPoint.fromMap(doc.id, doc.data());
         if (ride.isExpired) {
           await doc.reference.update({'status': 'expired'});
-          debugPrint('🗑️ Marked ride ${doc.id} as expired');
+          debugPrint('ðŸ—‘ï¸ Marked ride ${doc.id} as expired');
         }
       }
     } catch (e) {
-      debugPrint('⚠️ Expiry cleanup error: $e');
+      debugPrint('âš ï¸ Expiry cleanup error: $e');
     }
   }
 
@@ -1015,7 +1050,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         _latestPassengerSnapshot = snapshot;
         _processPassengerSnapshot(snapshot);
       },
-      onError: (e) => debugPrint('❌ Passenger stream error: $e'),
+      onError: (e) => debugPrint('âŒ Passenger stream error: $e'),
     );
   }
 
@@ -1133,7 +1168,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (!visibleIds.contains(ride.id)) continue;
 
       if (_portalSymbols.containsKey(ride.id)) {
-        // Symbol exists → update position (in case data changed)
+        // Symbol exists â†’ update position (in case data changed)
         try {
           await _mapController!.updateSymbol(
             _portalSymbols[ride.id]!,
@@ -1142,10 +1177,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           );
         } catch (e) {
-          debugPrint('⚠️ Failed to update portal ${ride.id}: $e');
+          debugPrint('âš ï¸ Failed to update portal ${ride.id}: $e');
         }
       } else {
-        // New ride → add symbol
+        // New ride â†’ add symbol
         try {
           final symbol = await _mapController!.addSymbol(SymbolOptions(
             geometry: LatLng(ride.lat, ride.lng),
@@ -1154,9 +1189,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             iconAnchor: 'center',
           ));
           _portalSymbols[ride.id] = symbol;
-          debugPrint('🔮 Portal placed for ride ${ride.id} → ${ride.destination}');
+          debugPrint('ðŸ”® Portal placed for ride ${ride.id} â†’ ${ride.destination}');
         } catch (e) {
-          debugPrint('❌ Failed to add portal ${ride.id}: $e');
+          debugPrint('âŒ Failed to add portal ${ride.id}: $e');
         }
       }
     }
@@ -1173,6 +1208,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         now.difference(_lastCameraAnimateTime!) >= _minAnimateInterval;
 
     if (canAnimate) {
+      _isProgrammaticCameraMove = true;
       _mapController!.animateCamera(
         CameraUpdate.newCameraPosition(CameraPosition(
           target: LatLng(pos.latitude, pos.longitude),
@@ -1180,13 +1216,31 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           tilt: _is3DMode ? 60.0 : 0.0,
         )),
         duration: const Duration(milliseconds: 500),
-      );
+      ).then((_) => _isProgrammaticCameraMove = false)
+       .catchError((_) => _isProgrammaticCameraMove = false);
       _lastCameraAnimateTime = now;
     }
   }
 
+  /// Called whenever the camera moves. If it's a user gesture (not programmatic),
+  /// pauses auto-camera follow for 8 seconds so the user can explore freely.
+  void _onUserMapInteraction() {
+    if (_isProgrammaticCameraMove) return; // ignore animated moves from code
+    if (!_userIsExploring) {
+      setState(() => _userIsExploring = true);
+    }
+    // Debounce: reset the 8s timer every frame the user moves the map
+    _exploreTimer?.cancel();
+    _exploreTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) setState(() => _userIsExploring = false);
+    });
+  }
+
   void _goToMyLocation() {
     if (_currentPosition == null || _mapController == null) return;
+    // Cancel explore mode so auto-follow resumes immediately
+    _exploreTimer?.cancel();
+    setState(() => _userIsExploring = false);
     _lastCameraAnimateTime = null;
     _animateCameraToPosition(_currentPosition!);
   }
@@ -1216,7 +1270,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _mapController = controller;
     _isMapReady = true;
     _mapController!.onSymbolTapped.add(_onSymbolTapped);
-    debugPrint('✅ Map created');
+    debugPrint('âœ… Map created');
 
     await _registerMarkerImages();
     await _updatePortalSymbols();
@@ -1224,7 +1278,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _onStyleLoaded() {
-    debugPrint('✅ Map style loaded');
+    debugPrint('âœ… Map style loaded');
     if (!_imagesRegistered) {
       _registerMarkerImages().then((_) {
         _createAvatarSymbol();
@@ -1277,7 +1331,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         final ride = _activeRides.firstWhere((r) => r.id == rideId);
         _showRideBottomSheet(ride);
       } catch (e) {
-        debugPrint('⚠️ Tapped portal ride data not found in _activeRides');
+        debugPrint('âš ï¸ Tapped portal ride data not found in _activeRides');
       }
       return;
     }
@@ -1557,10 +1611,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     if (!mounted) return;
 
+    final currentLatLng = _currentPosition != null
+        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+        : null;
+
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => _HostRideDialog(),
+      builder: (ctx) => _HostRideDialog(currentPos: currentLatLng),
     );
     if (result == null) return;
 
@@ -1570,24 +1628,52 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final waitMinutes = result['waitMinutes'] as int;
       final expiresAt = now.add(Duration(minutes: waitMinutes));
 
+      // From coords â€” either selected location or GPS
+      final fromLat = (result['fromLat'] as double?) ?? _currentPosition!.latitude;
+      final fromLng = (result['fromLng'] as double?) ?? _currentPosition!.longitude;
+      final toLat = result['toLat'] as double?;
+      final toLng = result['toLng'] as double?;
+      final toName = result['toName'] as String? ?? '';
+      final fromName = result['fromName'] as String? ?? 'Current Location';
+
       final rideData = SharingPoint(
         id: '', creatorId: user.uid,
-        lat: _currentPosition!.latitude, lng: _currentPosition!.longitude,
-        destination: result['destination'] as String,
+        lat: fromLat, lng: fromLng,
+        destination: toName,
         seatsAvailable: result['seats'] as int,
         totalSeats: result['seats'] as int,
         status: 'active', createdAt: now, expiresAt: expiresAt,
         passengers: [], arrivedPassengers: [],
+        ratedBy: [],
+        toLat: toLat, toLng: toLng,
       );
 
-      await FirebaseFirestore.instance
+      final docRef = await FirebaseFirestore.instance
           .collection('sharing_points')
           .add(rideData.toMap());
+      final newRideId = docRef.id;
 
-      _showSnackBar('🎉 Ride created! Others can join for ${waitMinutes}min.');
-      debugPrint('✅ Ride created: ${result['destination']}');
+      _showSnackBar('ðŸŽ‰ Ride created! Others can join for ${waitMinutes}min.');
+      debugPrint('âœ… Ride created: $fromName â†’ $toName');
+
+      // Draw glowing path for HOST only
+      if (toLat != null && toLng != null) {
+        final start = LatLng(fromLat, fromLng);
+        final end = LatLng(toLat, toLng);
+        await _drawGlowingPath(start, end);
+      }
+
+      // Phase 12: Check for matching ride (same from+to) from another host
+      if (toLat != null && toLng != null && mounted) {
+        await _checkForMatchingRide(
+          newRideId: newRideId,
+          fromLat: fromLat, fromLng: fromLng,
+          toLat: toLat, toLng: toLng,
+          currentUserId: user.uid,
+        );
+      }
     } catch (e) {
-      debugPrint('❌ Failed to create ride: $e');
+      debugPrint('âŒ Failed to create ride: $e');
       _showSnackBar('Failed to create ride: $e', isError: true);
     } finally {
       _isCreatingRide = false;
@@ -1632,6 +1718,361 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
+  // ===========================================================================
+  // PHASE 11: GLOWING PATH (Host destination route)
+  // ===========================================================================
+
+  Future<void> _clearGlowingPath() async {
+    if (_mapController == null) return;
+    try {
+      if (_glowLine != null) {
+        await _mapController!.removeLine(_glowLine!);
+        _glowLine = null;
+      }
+      if (_glowCore != null) {
+        await _mapController!.removeLine(_glowCore!);
+        _glowCore = null;
+      }
+    } catch (e) {
+      debugPrint('âš ï¸ Error clearing glow path: $e');
+    }
+  }
+
+  Future<void> _drawGlowingPath(LatLng start, LatLng end) async {
+    if (_mapController == null || _isDrawingGlow) return;
+    _isDrawingGlow = true;
+
+    try {
+      // Clear any existing glow path first
+      await _clearGlowingPath();
+
+      // Fetch road route from OSRM
+      final startLng = start.longitude.toStringAsFixed(6);
+      final startLat = start.latitude.toStringAsFixed(6);
+      final endLng = end.longitude.toStringAsFixed(6);
+      final endLat = end.latitude.toStringAsFixed(6);
+
+      final url = 'https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson';
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 15));
+
+      List<LatLng> routePoints = [start, end]; // fallback: straight line
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['routes'] != null && (data['routes'] as List).isNotEmpty) {
+          final coords = data['routes'][0]['geometry']['coordinates'] as List;
+          if (coords.isNotEmpty) {
+            routePoints = coords.map((c) => LatLng(c[1] as double, c[0] as double)).toList();
+          }
+        }
+      }
+
+      if (!mounted || _mapController == null) return;
+
+      // Draw outer glow (thick, semi-transparent cyan)
+      _glowLine = await _mapController!.addLine(LineOptions(
+        geometry: routePoints,
+        lineColor: '#00E5FF',
+        lineWidth: 14.0,
+        lineOpacity: 0.35,
+        lineJoin: 'round',
+      ));
+
+      // Draw inner core (sharp, bright)
+      _glowCore = await _mapController!.addLine(LineOptions(
+        geometry: routePoints,
+        lineColor: '#00FFFF',
+        lineWidth: 4.0,
+        lineOpacity: 0.95,
+        lineJoin: 'round',
+      ));
+
+      // Animate camera to show just the start of the route at a comfortable zoom.
+      // We do NOT fit the whole route bounds â€” that would zoom out too far on long routes.
+      await _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(CameraPosition(
+          target: start,
+          zoom: 14.0, // comfortable overview zoom
+          tilt: 0.0,
+        )),
+        duration: const Duration(milliseconds: 800),
+      );
+
+      debugPrint('âœ… Glowing path drawn with ${routePoints.length} points');
+    } catch (e) {
+      debugPrint('âš ï¸ Error drawing glow path: $e');
+    } finally {
+      if (mounted) _isDrawingGlow = false;
+    }
+  }
+
+  // ===========================================================================
+  // PHASE 12: SAME-DESTINATION HOST MATCHING
+  // ===========================================================================
+
+  /// After a host creates a ride, look for other active rides with very similar
+  /// from (within 500m) and to (within 500m) coordinates, from a different host.
+  Future<void> _checkForMatchingRide({
+    required String newRideId,
+    required double fromLat, required double fromLng,
+    required double toLat, required double toLng,
+    required String currentUserId,
+  }) async {
+    try {
+      // Fetch all active rides (Firestore doesn't support geo-queries natively)
+      final snapshot = await FirebaseFirestore.instance
+          .collection('sharing_points')
+          .where('status', whereIn: ['active', 'full'])
+          .get();
+
+      SharingPoint? match;
+      for (final doc in snapshot.docs) {
+        if (doc.id == newRideId) continue; // skip the ride we just created
+        final ride = SharingPoint.fromMap(doc.id, doc.data());
+        if (ride.creatorId == currentUserId) continue; // skip own rides
+        if (ride.toLat == null || ride.toLng == null) continue;
+        if (ride.isExpired) continue;
+
+        // Check FROM proximity (~500m)
+        final fromDist = Geolocator.distanceBetween(
+          fromLat, fromLng, ride.lat, ride.lng,
+        );
+        if (fromDist > 500) continue;
+
+        // Check TO proximity (~500m)
+        final toDist = Geolocator.distanceBetween(
+          toLat, toLng, ride.toLat!, ride.toLng!,
+        );
+        if (toDist > 500) continue;
+
+        match = ride;
+        break; // Use the first match found (earliest active ride)
+      }
+
+      if (match == null || !mounted) return;
+
+      // Fetch the matching host's profile
+      final hostDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(match.creatorId)
+          .get();
+      final hostData = hostDoc.data();
+      final hostName = hostData?['displayName'] as String? ?? 'Another rider';
+      final hostRating = (hostData?['safetyRating'] as num?)?.toDouble() ?? 0.0;
+
+      if (!mounted) return;
+      await _showMatchingRideDialog(
+        myNewRideId: newRideId,
+        matchingRide: match,
+        hostName: hostName,
+        hostRating: hostRating,
+        currentUserId: currentUserId,
+      );
+    } catch (e) {
+      debugPrint('âš ï¸ Matching ride check error: $e');
+    }
+  }
+
+  Future<void> _showMatchingRideDialog({
+    required String myNewRideId,
+    required SharingPoint matchingRide,
+    required String hostName,
+    required double hostRating,
+    required String currentUserId,
+  }) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A2E),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.4), width: 1.5),
+            boxShadow: [
+              BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.15), blurRadius: 40, spreadRadius: 4),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Pulsing icon
+              Container(
+                width: 60, height: 60,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.cyanAccent.withValues(alpha: 0.15),
+                  border: Border.all(color: Colors.cyanAccent, width: 2),
+                ),
+                child: const Icon(Icons.group, color: Colors.cyanAccent, size: 30),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'SAME ROUTE DETECTED',
+                style: TextStyle(color: Colors.cyanAccent, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Someone is already heading to the same destination!',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              // Host info card
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.account_circle, color: Colors.cyanAccent, size: 40),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(hostName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              const Icon(Icons.star, color: Colors.amber, size: 14),
+                              const SizedBox(width: 4),
+                              Text(
+                                hostRating > 0 ? hostRating.toStringAsFixed(1) : 'No rating yet',
+                                style: const TextStyle(color: Colors.amber, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'â†’ ${matchingRide.destination}',
+                            style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
+                            maxLines: 1, overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            '${matchingRide.seatsAvailable} seat${matchingRide.seatsAvailable != 1 ? 's' : ''} available',
+                            style: const TextStyle(color: Colors.greenAccent, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'If you join, your hosted ride will be cancelled.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.orangeAccent.withValues(alpha: 0.8), fontSize: 11),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(ctx).pop(false),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white54,
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('DECLINE', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(ctx).pop(true),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.cyanAccent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 8,
+                        shadowColor: Colors.cyanAccent.withValues(alpha: 0.4),
+                      ),
+                      child: const Text('JOIN THEIR RIDE', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (accepted != true || !mounted) return;
+
+    // --- User accepted: cancel my new ride, join the matching ride ---
+    try {
+      // 1. Cancel my freshly-created ride
+      await FirebaseFirestore.instance
+          .collection('sharing_points')
+          .doc(myNewRideId)
+          .update({'status': 'expired'});
+
+      // 2. Clear glowing path since we're joining, not hosting
+      await _clearGlowingPath();
+
+      // 3. Join the matching ride as a passenger (same logic as _joinRide in bottom sheet)
+      final matchRef = FirebaseFirestore.instance
+          .collection('sharing_points')
+          .doc(matchingRide.id);
+
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(matchRef);
+        if (!snapshot.exists) throw Exception('Ride no longer exists.');
+        final currentRide = SharingPoint.fromMap(snapshot.id, snapshot.data()!);
+        if (currentRide.seatsAvailable <= 0) throw Exception('Ride is now full.');
+        if (currentRide.isExpired) throw Exception('Ride has expired.');
+        final newSeats = currentRide.seatsAvailable - 1;
+        transaction.update(matchRef, {
+          'passengers': FieldValue.arrayUnion([currentUserId]),
+          'seatsAvailable': newSeats,
+          'status': newSeats <= 0 ? 'full' : currentRide.status,
+        });
+      });
+
+      // 4. Push initial passenger location
+      try {
+        if (_currentPosition != null) {
+          await matchRef
+              .collection('passenger_locations')
+              .doc(currentUserId)
+              .set({
+            'lat': _currentPosition!.latitude,
+            'lng': _currentPosition!.longitude,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+        }
+      } catch (_) {}
+
+      // 5. System message in matched ride's chat
+      await matchRef.collection('messages').add({
+        'senderId': 'system',
+        'senderName': 'System',
+        'text': '${FirebaseAuth.instance.currentUser?.displayName ?? 'A user'} joined from a matching route!',
+        'timestamp': FieldValue.serverTimestamp(),
+        'isSystem': true,
+      });
+
+      _showSnackBar('âœ… Joined $hostName\'s ride!');
+      debugPrint('âœ… Phase 12: Joined matching ride ${matchingRide.id}');
+    } catch (e) {
+      debugPrint('âŒ Phase 12 join error: $e');
+      _showSnackBar('Could not join ride: ${e.toString().replaceAll('Exception: ', '')}', isError: true);
+    }
+  }
+
   Future<void> _checkAndFetchRoute(SharingPoint ride) async {
     if (_currentPosition == null || _mapController == null || _isFetchingRoute) return;
 
@@ -1672,7 +2113,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         }
       }
     } catch (e) {
-      debugPrint('⚠️ Route fetch error: $e');
+      debugPrint('âš ï¸ Route fetch error: $e');
     } finally {
       if (mounted) _isFetchingRoute = false;
     }
@@ -1723,7 +2164,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         });
         _showSnackBar('Left the ride.');
       }
+      // Clear both the passenger route line AND the host glowing path
       await _clearRoute();
+      await _clearGlowingPath();
       setState(() => _myCurrentRide = null);
     } catch (e) {
       _showSnackBar('Error: $e', isError: true);
@@ -2005,7 +2448,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return Scaffold(
       body: Stack(
         children: [
-          // ─── MAP ───────────────────────────────────────────────────
+          // â”€â”€â”€ MAP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           MapLibreMap(
             styleString: _mapStyleJson!,
             initialCameraPosition: CameraPosition(
@@ -2017,13 +2460,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             onMapCreated: _onMapCreated,
             onStyleLoadedCallback: _onStyleLoaded,
             onMapClick: (point, latlng) => _handleMapTap(latlng),
+            onCameraIdle: () {},
+            onCameraMove: (_) => _onUserMapInteraction(),
             trackCameraPosition: true,
             compassEnabled: false,
             rotateGesturesEnabled: true,
             tiltGesturesEnabled: true,
           ),
 
-          // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
+          // â”€â”€â”€ TOP STATUS BAR OR HUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (_myCurrentRide != null)
             _buildActiveRideHUD()
           else
@@ -2092,7 +2537,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // ─── FABs (bottom-right) ───────────────────────────────────
+          // â”€â”€â”€ FABs (bottom-right) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           Positioned(
             right: 16,
             bottom: _myCurrentRide != null ? 180 : 100,
@@ -2132,7 +2577,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // ─── GPS COORDS (debug) ────────────────────────────────────
+          // â”€â”€â”€ GPS COORDS (debug) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           Positioned(
             bottom: 24, left: 16,
             child: Container(
@@ -2152,11 +2597,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // ─── ACTIVE RIDE BOTTOM PANEL ──────────────────────────────
+          // â”€â”€â”€ ACTIVE RIDE BOTTOM PANEL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (_myCurrentRide != null)
             _buildActiveRideBottomPanel(),
 
-          // ─── PHASE 10: SYNCHRONOUS RATING ──────────────────────────
+          // â”€â”€â”€ PHASE 10: SYNCHRONOUS RATING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           if (_myCurrentRide != null && _myCurrentRide!.status == 'rating_phase')
             _buildSynchronousRatingOverlay(),
         ],
@@ -2264,34 +2709,102 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 // =============================================================================
 
 class _HostRideDialog extends StatefulWidget {
+  final LatLng? currentPos;
+  const _HostRideDialog({this.currentPos});
+
   @override
   State<_HostRideDialog> createState() => _HostRideDialogState();
 }
 
 class _HostRideDialogState extends State<_HostRideDialog> {
-  final _destinationController = TextEditingController();
+  final _fromController = TextEditingController();
+  final _toController = TextEditingController();
   int _selectedSeats = 2;
   int _selectedWaitMinutes = 30;
   final List<int> _seatOptions = [1, 2, 3, 4, 5, 6];
   final List<int> _waitOptions = [15, 30, 45, 60];
 
+  LatLng? _fromCoords;
+  LatLng? _toCoords;
+  List<dynamic> _fromSuggestions = [];
+  List<dynamic> _toSuggestions = [];
+  Timer? _debounce;
+  bool _isLoadingFrom = false;
+  bool _isLoadingTo = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.currentPos != null) {
+      _fromController.text = "Current Location";
+      _fromCoords = widget.currentPos;
+    }
+  }
+
   @override
   void dispose() {
-    _destinationController.dispose();
+    _fromController.dispose();
+    _toController.dispose();
+    _debounce?.cancel();
     super.dispose();
+  }
+
+  Future<void> _fetchSuggestions(String query, bool isFrom) async {
+    if (query.length < 3) {
+      setState(() {
+        if (isFrom) _fromSuggestions = [];
+        else _toSuggestions = [];
+      });
+      return;
+    }
+
+    setState(() {
+      if (isFrom) _isLoadingFrom = true;
+      else _isLoadingTo = true;
+    });
+
+    try {
+      final url = Uri.parse('https://nominatim.openstreetmap.org/search?q=$query&format=json&limit=5&addressdetails=1');
+      final response = await http.get(url, headers: {'User-Agent': 'GeoRideApp'});
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          if (isFrom) _fromSuggestions = data;
+          else _toSuggestions = data;
+        });
+      }
+    } catch (e) {
+      debugPrint('Geocoding error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          if (isFrom) _isLoadingFrom = false;
+          else _isLoadingTo = false;
+        });
+      }
+    }
+  }
+
+  void _onSearchChanged(String query, bool isFrom) {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      _fetchSuggestions(query, isFrom);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Dialog(
       backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       child: Container(
+        width: double.infinity,
         padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(
           color: const Color(0xFF1A1A2E),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.4), width: 1.5),
-          boxShadow: [BoxShadow(color: Colors.orangeAccent.withValues(alpha: 0.15), blurRadius: 30, spreadRadius: 5)],
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.3), width: 1.5),
+          boxShadow: [BoxShadow(color: Colors.orangeAccent.withValues(alpha: 0.1), blurRadius: 40, spreadRadius: 5)],
         ),
         child: SingleChildScrollView(
           child: Column(
@@ -2307,130 +2820,109 @@ class _HostRideDialogState extends State<_HostRideDialog> {
                       color: Colors.orangeAccent.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(Icons.add_location_alt, color: Colors.orangeAccent, size: 24),
+                    child: const Icon(Icons.rocket_launch, color: Colors.orangeAccent, size: 24),
                   ),
                   const SizedBox(width: 12),
                   const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Host a Ride', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                      Text('Share your ride with others', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      Text('Set your journey details', style: TextStyle(color: Colors.white54, fontSize: 12)),
                     ],
                   ),
                 ],
               ),
               const SizedBox(height: 24),
 
-              // Destination
-              const Text('DESTINATION', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _destinationController,
-                style: const TextStyle(color: Colors.white, fontSize: 16),
-                decoration: InputDecoration(
-                  hintText: 'Where are you going?',
-                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
-                  prefixIcon: Icon(Icons.place, color: Colors.orangeAccent.withValues(alpha: 0.6)),
-                  filled: true, fillColor: Colors.white.withValues(alpha: 0.07),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.orangeAccent, width: 1.5)),
-                ),
-                textCapitalization: TextCapitalization.words,
+              // FROM Field
+              _buildLocationField(
+                label: 'FROM',
+                controller: _fromController,
+                hint: 'Starting point...',
+                icon: Icons.my_location,
+                isFrom: true,
+                isLoading: _isLoadingFrom,
+                suggestions: _fromSuggestions,
+                onSelected: (item) {
+                  setState(() {
+                    _fromController.text = item['display_name'];
+                    _fromCoords = LatLng(double.parse(item['lat']), double.parse(item['lon']));
+                    _fromSuggestions = [];
+                  });
+                },
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
 
-              // Seats
-              const Text('SEATS AVAILABLE', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-              const SizedBox(height: 10),
-              Row(
-                children: _seatOptions.map((seats) {
-                  final isSelected = _selectedSeats == seats;
-                  return Expanded(
-                    child: GestureDetector(
-                      onTap: () => setState(() => _selectedSeats = seats),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: isSelected ? Colors.orangeAccent : Colors.white.withValues(alpha: 0.07),
-                          borderRadius: BorderRadius.circular(10),
-                          border: isSelected ? null : Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                        child: Center(
-                          child: Text('$seats', style: TextStyle(color: isSelected ? Colors.black : Colors.white70, fontSize: 16, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
+              // TO Field
+              _buildLocationField(
+                label: 'TO (DESTINATION)',
+                controller: _toController,
+                hint: 'Where are you going?',
+                icon: Icons.place,
+                isFrom: false,
+                isLoading: _isLoadingTo,
+                suggestions: _toSuggestions,
+                onSelected: (item) {
+                  setState(() {
+                    _toController.text = item['display_name'];
+                    _toCoords = LatLng(double.parse(item['lat']), double.parse(item['lon']));
+                    _toSuggestions = [];
+                  });
+                },
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
 
-              // Wait Time
-              const Text('WAIT TIME', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-              const SizedBox(height: 10),
-              Row(
-                children: _waitOptions.map((mins) {
-                  final isSelected = _selectedWaitMinutes == mins;
-                  return Expanded(
-                    child: GestureDetector(
-                      onTap: () => setState(() => _selectedWaitMinutes = mins),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: isSelected ? Colors.orangeAccent : Colors.white.withValues(alpha: 0.07),
-                          borderRadius: BorderRadius.circular(10),
-                          border: isSelected ? null : Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                        child: Center(
-                          child: Text('${mins}m', style: TextStyle(color: isSelected ? Colors.black : Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 28),
-
-              // Buttons
+              // Seats & Wait Time (compact)
               Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(null),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white54,
-                        side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: const Text('Cancel'),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('SEATS', style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        const SizedBox(height: 8),
+                        _buildSeatPicker(),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('WAIT TIME', style: TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                        const SizedBox(height: 8),
+                        _buildWaitPicker(),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 32),
+
+              // Action Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     flex: 2,
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        final dest = _destinationController.text.trim();
-                        if (dest.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Please enter a destination'), backgroundColor: Colors.red),
-                          );
-                          return;
-                        }
-                        Navigator.of(context).pop({
-                          'destination': dest, 'seats': _selectedSeats, 'waitMinutes': _selectedWaitMinutes,
-                        });
-                      },
-                      icon: const Icon(Icons.rocket_launch, size: 18),
-                      label: const Text('Create Ride', style: TextStyle(fontWeight: FontWeight.bold)),
+                    child: ElevatedButton(
+                      onPressed: _validateAndSubmit,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orangeAccent, foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        backgroundColor: Colors.orangeAccent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        elevation: 8,
+                        shadowColor: Colors.orangeAccent.withValues(alpha: 0.3),
                       ),
+                      child: const Text('CREATE RIDE', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1)),
                     ),
                   ),
                 ],
@@ -2440,6 +2932,146 @@ class _HostRideDialogState extends State<_HostRideDialog> {
         ),
       ),
     );
+  }
+
+  Widget _buildLocationField({
+    required String label,
+    required TextEditingController controller,
+    required String hint,
+    required IconData icon,
+    required bool isFrom,
+    required bool isLoading,
+    required List<dynamic> suggestions,
+    required Function(dynamic) onSelected,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(label, style: const TextStyle(color: Colors.orangeAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+            const Spacer(),
+            if (isFrom)
+              GestureDetector(
+                onTap: () {
+                  if (widget.currentPos != null) {
+                    setState(() {
+                      _fromController.text = "Current Location";
+                      _fromCoords = widget.currentPos;
+                      _fromSuggestions = [];
+                    });
+                  }
+                },
+                child: const Text('USE CURRENT', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          onChanged: (val) => _onSearchChanged(val, isFrom),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.2)),
+            prefixIcon: Icon(icon, color: Colors.orangeAccent.withValues(alpha: 0.6), size: 18),
+            suffixIcon: isLoading ? const SizedBox(width: 20, height: 20, child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator(strokeWidth: 2, color: Colors.orangeAccent))) : null,
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.05),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          ),
+        ),
+        if (suggestions.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.only(top: 4),
+            constraints: const BoxConstraints(maxHeight: 200),
+            decoration: BoxDecoration(
+              color: const Color(0xFF252545),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+            ),
+            child: ListView.separated(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: suggestions.length,
+              separatorBuilder: (_, __) => Divider(color: Colors.white.withValues(alpha: 0.05), height: 1),
+              itemBuilder: (ctx, idx) {
+                final item = suggestions[idx];
+                return ListTile(
+                  dense: true,
+                  title: Text(item['display_name'], style: const TextStyle(color: Colors.white70, fontSize: 12), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  onTap: () => onSelected(item),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSeatPicker() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: DropdownButton<int>(
+        value: _selectedSeats,
+        dropdownColor: const Color(0xFF1A1A2E),
+        underline: const SizedBox.shrink(),
+        isExpanded: true,
+        icon: const Icon(Icons.arrow_drop_down, color: Colors.orangeAccent),
+        items: _seatOptions.map((s) => DropdownMenuItem(value: s, child: Text('$s Seats', style: const TextStyle(color: Colors.white, fontSize: 14)))).toList(),
+        onChanged: (val) => setState(() => _selectedSeats = val!),
+      ),
+    );
+  }
+
+  Widget _buildWaitPicker() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: DropdownButton<int>(
+        value: _selectedWaitMinutes,
+        dropdownColor: const Color(0xFF1A1A2E),
+        underline: const SizedBox.shrink(),
+        isExpanded: true,
+        icon: const Icon(Icons.arrow_drop_down, color: Colors.orangeAccent),
+        items: _waitOptions.map((m) => DropdownMenuItem(value: m, child: Text('${m}m Wait', style: const TextStyle(color: Colors.white, fontSize: 14)))).toList(),
+        onChanged: (val) => setState(() => _selectedWaitMinutes = val!),
+      ),
+    );
+  }
+
+  void _validateAndSubmit() {
+    if (_fromCoords == null || _fromController.text.isEmpty) {
+      _showError('Please select a valid starting point');
+      return;
+    }
+    if (_toCoords == null || _toController.text.isEmpty) {
+      _showError('Please select a valid destination');
+      return;
+    }
+
+    Navigator.of(context).pop({
+      'fromName': _fromController.text,
+      'fromLat': _fromCoords!.latitude,
+      'fromLng': _fromCoords!.longitude,
+      'toName': _toController.text,
+      'toLat': _toCoords!.latitude,
+      'toLng': _toCoords!.longitude,
+      'seats': _selectedSeats,
+      'waitMinutes': _selectedWaitMinutes,
+    });
+  }
+
+  void _showError(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.redAccent));
   }
 }
 
@@ -2790,7 +3422,76 @@ class _RideBottomSheetState extends State<_RideBottomSheet> {
 }
 
 // =============================================================================
-// PHASE 10: SYNCHRONOUS RATING FORMS
+// PHASE 10: INDEPENDENT RATING FORMS
+//
+// Design: Both host and passengers submit independently. Each submission:
+//   1. Writes to the target user(s) rating profile
+//   2. Adds the submitter's UID to the ride's `ratedBy` array (arrayUnion)
+//   3. If ratedBy.length >= arrivedPassengers.length + 1 (host + all arrived),
+//      the transaction also sets status='expired' â€” only then does the ride end.
+//
+// This ensures NO single submission closes anyone else's form.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Helper: submit a rating to a user's profile (shared by both forms)
+// -----------------------------------------------------------------------------
+Future<void> _submitUserRating(String uid, int stars) async {
+  final docRef = FirebaseFirestore.instance.collection('users').doc(uid);
+  await FirebaseFirestore.instance.runTransaction((t) async {
+    final snap = await t.get(docRef);
+    if (!snap.exists) {
+      t.set(docRef, {
+        'safetyRating': stars.toDouble(),
+        'ratingCount': 1,
+        'ratingSum': stars,
+      });
+    } else {
+      final data = snap.data()!;
+      final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
+      final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
+      t.update(docRef, {
+        'ratingCount': count + 1,
+        'ratingSum': sum + stars,
+        'safetyRating': (sum + stars) / (count + 1),
+      });
+    }
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Helper: mark this UID as having rated, and expire the ride if everyone has.
+// Returns true if the ride was just expired (this person was last).
+// -----------------------------------------------------------------------------
+Future<bool> _markRatedAndMaybeExpire({
+  required String rideId,
+  required String submitterUid,
+  required int totalArrivedPassengers, // does NOT include host
+}) async {
+  bool didExpire = false;
+  final rideRef = FirebaseFirestore.instance.collection('sharing_points').doc(rideId);
+  await FirebaseFirestore.instance.runTransaction((t) async {
+    final snap = await t.get(rideRef);
+    if (!snap.exists) return;
+    final data = snap.data()!;
+    final currentRatedBy = List<String>.from(data['ratedBy'] ?? []);
+    if (currentRatedBy.contains(submitterUid)) return; // already submitted
+    currentRatedBy.add(submitterUid);
+    // Total raters = arrived passengers + 1 host
+    final needed = totalArrivedPassengers + 1;
+    if (currentRatedBy.length >= needed) {
+      // Last person â€” expire the ride
+      t.update(rideRef, {'ratedBy': currentRatedBy, 'status': 'expired'});
+      didExpire = true;
+    } else {
+      t.update(rideRef, {'ratedBy': currentRatedBy});
+    }
+  });
+  return didExpire;
+}
+
+// =============================================================================
+// PASSENGER RATING FORM â€” rates the host
 // =============================================================================
 
 class _PassengerRatingHostForm extends StatefulWidget {
@@ -2804,75 +3505,92 @@ class _PassengerRatingHostForm extends StatefulWidget {
 class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
   int _rating = 0;
   bool _isSaving = false;
+  bool _submitted = false;
 
   @override
   Widget build(BuildContext context) {
-    if (_isSaving) return const Center(child: CircularProgressIndicator(color: Colors.amber));
+    if (_isSaving) {
+      return const Center(child: CircularProgressIndicator(color: Colors.amber));
+    }
+
+    if (_submitted) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.check_circle, color: Colors.greenAccent, size: 60),
+          const SizedBox(height: 16),
+          const Text('Rating Submitted!',
+              style: TextStyle(color: Colors.greenAccent, fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(
+            'You gave the host $_rating ${_rating == 1 ? 'star' : 'stars'}.\nWaiting for everyone to finish rating...',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          const SizedBox(height: 20),
+          const CircularProgressIndicator(color: Colors.amber, strokeWidth: 2),
+        ],
+      );
+    }
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         const Icon(Icons.stars, color: Colors.amber, size: 48),
         const SizedBox(height: 16),
-        const Text('Ride Completed!', style: TextStyle(color: Colors.cyanAccent, fontSize: 24, fontWeight: FontWeight.bold)),
+        const Text('Ride Completed!',
+            style: TextStyle(color: Colors.cyanAccent, fontSize: 24, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        const Text('Please rate the Host.', style: TextStyle(color: Colors.white70)),
+        const Text('Rate your Host.', style: TextStyle(color: Colors.white70)),
         const SizedBox(height: 24),
         Row(
-           mainAxisAlignment: MainAxisAlignment.center,
-           children: List.generate(5, (index) {
-              return IconButton(
-                 icon: Icon(index < _rating ? Icons.star : Icons.star_border, color: index < _rating ? Colors.amber : Colors.white24, size: 40),
-                 onPressed: () => setState(() => _rating = index + 1),
-              );
-           }),
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(5, (i) => IconButton(
+            icon: Icon(
+              i < _rating ? Icons.star : Icons.star_border,
+              color: i < _rating ? Colors.amber : Colors.white24,
+              size: 40,
+            ),
+            onPressed: () => setState(() => _rating = i + 1),
+          )),
         ),
         const SizedBox(height: 24),
         ElevatedButton.icon(
-           onPressed: _rating > 0 ? () async {
-              setState(() => _isSaving = true);
-              try {
-                // Submit rating to host
-                final docRef = FirebaseFirestore.instance.collection('users').doc(widget.rideToLeave.creatorId);
-                await FirebaseFirestore.instance.runTransaction((transaction) async {
-                  final snapshot = await transaction.get(docRef);
-                  if (!snapshot.exists) {
-                    transaction.set(docRef, {'displayName': 'Host', 'safetyRating': _rating.toDouble(), 'ratingCount': 1, 'ratingSum': _rating});
-                  } else {
-                    final data = snapshot.data()!;
-                    final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
-                    final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
-                    transaction.update(docRef, {
-                      'ratingCount': count + 1,
-                      'ratingSum': sum + _rating,
-                      'safetyRating': (sum + _rating) / (count + 1),
-                    });
-                  }
-                });
-
-                // Leave ride -> triggers global local state reset
-                final user = FirebaseAuth.instance.currentUser;
-                if (user != null) {
-                   final rideRef = FirebaseFirestore.instance.collection('sharing_points').doc(widget.rideToLeave.id);
-                   await FirebaseFirestore.instance.runTransaction((t) async {
-                       t.update(rideRef, {
-                         'passengers': FieldValue.arrayRemove([user.uid]),
-                         'arrivedPassengers': FieldValue.arrayRemove([user.uid]),
-                       });
-                   });
-                }
-              } catch (e) {
-                debugPrint('Rating fault: $e');
-              }
-           } : null,
-           icon: const Icon(Icons.check),
-           label: const Text('Submit & Finish', style: TextStyle(fontWeight: FontWeight.bold)),
-           style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black, minimumSize: const Size(double.infinity, 50)),
-        )
+          onPressed: _rating > 0 ? () async {
+            final user = FirebaseAuth.instance.currentUser;
+            if (user == null) return;
+            setState(() => _isSaving = true);
+            try {
+              // 1. Write host's rating
+              await _submitUserRating(widget.rideToLeave.creatorId, _rating);
+              // 2. Mark this passenger as rated; expire ride if everyone has rated
+              await _markRatedAndMaybeExpire(
+                rideId: widget.rideToLeave.id,
+                submitterUid: user.uid,
+                totalArrivedPassengers: widget.rideToLeave.arrivedPassengers.length,
+              );
+              setState(() { _isSaving = false; _submitted = true; });
+            } catch (e) {
+              debugPrint('Passenger rating error: $e');
+              setState(() => _isSaving = false);
+            }
+          } : null,
+          icon: const Icon(Icons.check),
+          label: const Text('Submit Rating', style: TextStyle(fontWeight: FontWeight.bold)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.amber,
+            foregroundColor: Colors.black,
+            minimumSize: const Size(double.infinity, 50),
+          ),
+        ),
       ],
     );
   }
 }
+
+// =============================================================================
+// HOST RATING FORM â€” rates all arrived passengers
+// =============================================================================
 
 class _HostRatingPassengersForm extends StatefulWidget {
   final SharingPoint rideToLeave;
@@ -2884,8 +3602,9 @@ class _HostRatingPassengersForm extends StatefulWidget {
 
 class _HostRatingPassengersFormState extends State<_HostRatingPassengersForm> {
   final Map<String, int> _ratings = {};
-  List<String> _passengersToRate = [];
+  late List<String> _passengersToRate;
   bool _isSaving = false;
+  bool _submitted = false;
 
   @override
   void initState() {
@@ -2900,89 +3619,151 @@ class _HostRatingPassengersFormState extends State<_HostRatingPassengersForm> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isSaving) return const Center(child: CircularProgressIndicator(color: Colors.amber));
+    if (_isSaving) {
+      return const Center(child: CircularProgressIndicator(color: Colors.amber));
+    }
+
+    if (_submitted) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.check_circle, color: Colors.greenAccent, size: 60),
+          const SizedBox(height: 16),
+          const Text('Ratings Submitted!',
+              style: TextStyle(color: Colors.greenAccent, fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text(
+            'Waiting for passengers to finish rating...',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          const SizedBox(height: 20),
+          const CircularProgressIndicator(color: Colors.amber, strokeWidth: 2),
+        ],
+      );
+    }
+
+    if (_passengersToRate.isEmpty) {
+      // No passengers arrived â€” host can just end the ride immediately
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.shield, color: Colors.greenAccent, size: 48),
+          const SizedBox(height: 16),
+          const Text('Ride Completed!',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.greenAccent, fontSize: 24, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text('No passengers to rate.', style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () async {
+              setState(() => _isSaving = true);
+              try {
+                await FirebaseFirestore.instance
+                    .collection('sharing_points')
+                    .doc(widget.rideToLeave.id)
+                    .update({'status': 'expired'});
+              } catch (e) {
+                debugPrint('Host end ride error: $e');
+              }
+            },
+            icon: const Icon(Icons.check_circle),
+            label: const Text('End Ride', style: TextStyle(fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.greenAccent,
+              foregroundColor: Colors.black,
+              minimumSize: const Size(double.infinity, 50),
+            ),
+          ),
+        ],
+      );
+    }
 
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Icon(Icons.shield, color: Colors.greenAccent, size: 48),
-        const SizedBox(height: 16),
-        const Text('Ride Completed!', textAlign: TextAlign.center, style: TextStyle(color: Colors.greenAccent, fontSize: 24, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
-        const Text('Please securely rate all passengers.', style: TextStyle(color: Colors.white70)),
-        const SizedBox(height: 16),
-        Expanded(
+        const SizedBox(height: 12),
+        const Text('Ride Completed!',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.greenAccent, fontSize: 22, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        const Text('Rate each passenger below.', style: TextStyle(color: Colors.white70, fontSize: 13)),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: (_passengersToRate.length * 100.0).clamp(80.0, 260.0),
           child: ListView.builder(
+            shrinkWrap: true,
             itemCount: _passengersToRate.length,
             itemBuilder: (ctx, index) {
               final pid = _passengersToRate[index];
               return FutureBuilder<DocumentSnapshot>(
                 future: FirebaseFirestore.instance.collection('users').doc(pid).get(),
                 builder: (context, snapshot) {
-                   String name = 'Passenger';
-                   if (snapshot.hasData && snapshot.data!.exists) {
-                      name = (snapshot.data!.data() as Map<String, dynamic>?)?['displayName'] ?? 'Passenger';
-                   }
-                   return Padding(
-                     padding: const EdgeInsets.symmetric(vertical: 12.0),
-                     child: Column(
-                       crossAxisAlignment: CrossAxisAlignment.start,
-                       children: [
-                         Text(name, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                         Row(
-                           children: List.generate(5, (starIdx) {
-                              return IconButton(
-                                 icon: Icon(starIdx < _ratings[pid]! ? Icons.star : Icons.star_border, color: starIdx < _ratings[pid]! ? Colors.amber : Colors.white24, size: 32),
-                                 onPressed: () => setState(() => _ratings[pid] = starIdx + 1),
-                              );
-                           }),
-                         )
-                       ],
-                     ),
-                   );
-                }
+                  String name = 'Passenger';
+                  if (snapshot.hasData && snapshot.data!.exists) {
+                    name = (snapshot.data!.data() as Map<String, dynamic>?)?['displayName'] ?? 'Passenger';
+                  }
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(name, style: const TextStyle(
+                            color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                        Row(
+                          children: List.generate(5, (starIdx) => IconButton(
+                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                            padding: EdgeInsets.zero,
+                            icon: Icon(
+                              starIdx < (_ratings[pid] ?? 0) ? Icons.star : Icons.star_border,
+                              color: starIdx < (_ratings[pid] ?? 0) ? Colors.amber : Colors.white24,
+                              size: 30,
+                            ),
+                            onPressed: () => setState(() => _ratings[pid] = starIdx + 1),
+                          )),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               );
-            }
+            },
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         ElevatedButton.icon(
-           onPressed: _allRated ? () async {
-              setState(() => _isSaving = true);
-              try {
-                // Submit ratings to all passengers
-                for (final pid in _ratings.keys) {
-                  final docRef = FirebaseFirestore.instance.collection('users').doc(pid);
-                  final rating = _ratings[pid]!;
-                  await FirebaseFirestore.instance.runTransaction((t) async {
-                    final snap = await t.get(docRef);
-                    if (!snap.exists) {
-                      t.set(docRef, {'displayName': 'Passenger', 'safetyRating': rating.toDouble(), 'ratingCount': 1, 'ratingSum': rating});
-                    } else {
-                      final data = snap.data()!;
-                      final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
-                      final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
-                      t.update(docRef, {
-                        'ratingCount': count + 1,
-                        'ratingSum': sum + rating,
-                        'safetyRating': (sum + rating) / (count + 1),
-                      });
-                    }
-                  });
-                }
-                
-                // End ride for host entirely
-                await FirebaseFirestore.instance.collection('sharing_points').doc(widget.rideToLeave.id).update({
-                  'status': 'expired'
-                });
-              } catch (e) {
-                debugPrint('Host rating fault: $e');
+          onPressed: _allRated ? () async {
+            final user = FirebaseAuth.instance.currentUser;
+            if (user == null) return;
+            setState(() => _isSaving = true);
+            try {
+              // 1. Write ratings to each passenger's profile
+              for (final pid in _ratings.keys) {
+                await _submitUserRating(pid, _ratings[pid]!);
               }
-           } : null,
-           icon: const Icon(Icons.check_circle),
-           label: const Text('Submit All & End Ride', style: TextStyle(fontWeight: FontWeight.bold)),
-           style: ElevatedButton.styleFrom(backgroundColor: Colors.greenAccent, foregroundColor: Colors.black, minimumSize: const Size(double.infinity, 50)),
-        )
+              // 2. Mark host as rated; expire ride if everyone has rated
+              await _markRatedAndMaybeExpire(
+                rideId: widget.rideToLeave.id,
+                submitterUid: user.uid,
+                totalArrivedPassengers: widget.rideToLeave.arrivedPassengers.length,
+              );
+              setState(() { _isSaving = false; _submitted = true; });
+            } catch (e) {
+              debugPrint('Host rating error: $e');
+              setState(() => _isSaving = false);
+            }
+          } : null,
+          icon: const Icon(Icons.check_circle),
+          label: const Text('Submit All & End Ride', style: TextStyle(fontWeight: FontWeight.bold)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.greenAccent,
+            foregroundColor: Colors.black,
+            minimumSize: const Size(double.infinity, 50),
+          ),
+        ),
       ],
     );
   }
