@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../theme/app_theme.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -18,19 +19,22 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isLoading = false;
 
   void _showError(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.redAccent,
+        backgroundColor: AppColors.error,
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
   void _showSuccess(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.greenAccent,
+        backgroundColor: AppColors.success,
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -108,10 +112,10 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF1A1A2E), // GeoRide Dark Mode Theme
-      body: Center(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -123,24 +127,21 @@ class _AuthScreenState extends State<AuthScreen> {
                   shape: BoxShape.circle,
                   gradient: RadialGradient(
                     colors: [
-                      Colors.greenAccent.withValues(alpha: 0.8),
-                      Colors.greenAccent.withValues(alpha: 0.2),
+                      AppColors.primary.withValues(alpha: 0.8),
+                      AppColors.primary.withValues(alpha: 0.2),
                       Colors.transparent,
                     ],
                   ),
                 ),
                 child: const Center(
-                  child: Icon(Icons.explore, size: 50, color: Colors.greenAccent),
+                  child: Icon(Icons.explore, size: 50, color: AppColors.primary),
                 ),
               ),
               const SizedBox(height: 24),
-              const Text(
+              Text(
                 'GeoRide',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
+                style: AppTypography.displayMedium.copyWith(
                   letterSpacing: 2,
                 ),
               ),
@@ -148,9 +149,8 @@ class _AuthScreenState extends State<AuthScreen> {
               Text(
                 _isLogin ? 'Welcome back, trainer!' : 'Join the adventure!',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.white.withValues(alpha: 0.7),
+                style: AppTypography.bodyLarge.copyWith(
+                  color: AppColors.textSecondary,
                 ),
               ),
               const SizedBox(height: 48),
@@ -159,60 +159,72 @@ class _AuthScreenState extends State<AuthScreen> {
               if (!_isLogin) ...[
                 TextField(
                   controller: _usernameController,
-                  style: const TextStyle(color: Colors.white),
+                  style: AppTypography.bodyLarge.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
                   decoration: InputDecoration(
                     labelText: 'Username',
-                    labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.6)),
+                    labelStyle: AppTypography.bodyMedium.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
                     filled: true,
-                    fillColor: Colors.black.withValues(alpha: 0.4),
+                    fillColor: AppColors.surface,
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(16),
-                      borderSide: BorderSide(color: Colors.greenAccent.withValues(alpha: 0.3)),
+                      borderSide: BorderSide(color: AppColors.textSecondary),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(16),
-                      borderSide: const BorderSide(color: Colors.greenAccent),
+                      borderSide: BorderSide(color: AppColors.primary),
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
               ],
               TextField(
                 controller: _emailController,
                 keyboardType: TextInputType.emailAddress,
-                style: const TextStyle(color: Colors.white),
+                style: AppTypography.bodyLarge.copyWith(
+                  color: AppColors.textPrimary,
+                ),
                 decoration: InputDecoration(
                   labelText: 'Email',
-                  labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.6)),
+                  labelStyle: AppTypography.bodyMedium.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
                   filled: true,
-                  fillColor: Colors.black.withValues(alpha: 0.4),
+                  fillColor: AppColors.surface,
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide(color: Colors.greenAccent.withValues(alpha: 0.3)),
+                    borderSide: BorderSide(color: AppColors.textSecondary),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(color: Colors.greenAccent),
+                    borderSide: BorderSide(color: AppColors.primary),
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 20),
               TextField(
                 controller: _passwordController,
                 obscureText: true,
-                style: const TextStyle(color: Colors.white),
+                style: AppTypography.bodyLarge.copyWith(
+                  color: AppColors.textPrimary,
+                ),
                 decoration: InputDecoration(
                   labelText: 'Password',
-                  labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.6)),
+                  labelStyle: AppTypography.bodyMedium.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
                   filled: true,
-                  fillColor: Colors.black.withValues(alpha: 0.4),
+                  fillColor: AppColors.surface,
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide(color: Colors.greenAccent.withValues(alpha: 0.3)),
+                    borderSide: BorderSide(color: AppColors.textSecondary),
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(color: Colors.greenAccent),
+                    borderSide: BorderSide(color: AppColors.primary),
                   ),
                 ),
               ),
@@ -222,33 +234,32 @@ class _AuthScreenState extends State<AuthScreen> {
                   alignment: Alignment.centerRight,
                   child: TextButton(
                     onPressed: _resetPassword,
-                    child: const Text(
+                    child: Text(
                       'Forgot Password?',
-                      style: TextStyle(color: Colors.cyanAccent),
+                      style: AppTypography.bodyMedium.copyWith(
+                        color: AppColors.accent1,
+                      ),
                     ),
                   ),
                 )
               else
                 const SizedBox(height: 24),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
 
               // Action Button
               _isLoading
-                  ? const Center(child: CircularProgressIndicator(color: Colors.greenAccent))
+                  ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
                   : ElevatedButton(
                       onPressed: _submit,
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.greenAccent,
+                        backgroundColor: AppColors.cta,
                         foregroundColor: Colors.black,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16),
                         ),
-                        textStyle: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        textStyle: AppTypography.titleMedium,
                       ),
                       child: Text(_isLogin ? 'LOG IN' : 'SIGN UP'),
                     ),
@@ -266,7 +277,9 @@ class _AuthScreenState extends State<AuthScreen> {
                   _isLogin
                       ? "Don't have an account? Sign up"
                       : "Already have an account? Log in",
-                  style: const TextStyle(color: Colors.white70),
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
                 ),
               ),
             ],

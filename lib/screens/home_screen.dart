@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'dart:ui' as ui;
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
@@ -10,6 +8,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../services/corridor_service.dart';
+import '../widgets/ar_navigation_overlay.dart';
+import '../theme/app_theme.dart';
 
 // ============================================================================
 // SHARING POINT MODEL (inline per architecture rules)
@@ -160,9 +161,10 @@ class _ChatModalSheetState extends State<_ChatModalSheet> {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+   @override
+   Widget build(BuildContext context) {
+     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+     final currentUid = FirebaseAuth.instance.currentUser?.uid;
     
     return Container(
       height: MediaQuery.of(context).size.height * 0.7 + bottomInset,
@@ -207,10 +209,9 @@ class _ChatModalSheetState extends State<_ChatModalSheet> {
                   return const Center(child: CircularProgressIndicator(color: Colors.greenAccent));
                 }
                 
-                final docs = snapshot.data!.docs;
-                final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                 final docs = snapshot.data!.docs;
 
-                // Auto-scroll to bottom
+                 // Auto-scroll to bottom
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_scrollController.hasClients) {
                     _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
@@ -351,6 +352,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Position? _currentPosition;
   StreamSubscription<Position>? _positionStreamSub;
   final List<Position> _positionBuffer = [];
+  final StreamController<Position> _positionStreamController = StreamController<Position>.broadcast();
 
   // ---------------------------------------------------------------------------
   // Camera debounce
@@ -371,12 +373,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   String _loadingMessage = 'Getting your location...';
 
   // ---------------------------------------------------------------------------
-  // Phase 2: Ride hosting state
-  // ---------------------------------------------------------------------------
-  bool _isCreatingRide = false;
-
-  // ---------------------------------------------------------------------------
-  // Phase 3: Portal rendering state
+  // Phase 2: Portal rendering state
   // ---------------------------------------------------------------------------
   List<SharingPoint> _activeRides = [];
   final Map<String, Symbol> _portalSymbols = {};
@@ -401,6 +398,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   DateTime? _lastLocationUploadTime;
   bool _hasReachedPortal = false;
   final Set<String> _arrivedPassengers = {};
+  bool _isArNavMode = false;
+  final ValueNotifier<LatLng?> _arNavMapTapNotifier = ValueNotifier(null);
+
+  // Phase 10: Glowing Route & Rider Dots
+  final List<Line> _glowLines = [];
+  final Map<String, Symbol> _riderDots = {};
+  Line? _traveledLine;
+  bool _isOverviewMode = true;
+  
+  // Explore mode state
+  bool _isUserExploringMap = false;
+  bool _isProgrammaticCameraMove = false;
+  static const _exploreModeDuration = Duration(seconds: 30); // Auto-reset explore mode after 30s
+  Timer? _exploreModeTimer;
 
   @override
   void initState() {
@@ -409,16 +420,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initLocation();
     _startRidesStream();
     _startExpiryTimer();
+    // Initialize explore mode timer
+    _exploreModeTimer = null;
   }
 
   @override
   void dispose() {
     _positionStreamSub?.cancel();
+    _positionStreamController.close();
     _ridesStreamSub?.cancel();
     _passengerLocationsSub?.cancel();
     _expiryTimer?.cancel();
+    _exploreModeTimer?.cancel();
     if (_mapController != null) {
       _mapController!.onSymbolTapped.remove(_onSymbolTapped);
+      _mapController!.removeListener(_onCameraMove); // Remove camera listener
     }
     super.dispose();
   }
@@ -586,9 +602,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       }
     }
 
-    setState(() => _currentPosition = smoothed);
-    _updateAvatarPosition(smoothed);
-    _animateCameraToPosition(smoothed);
+     setState(() => _currentPosition = smoothed);
+     _positionStreamController.add(smoothed);
+     _updateAvatarPosition(smoothed);
+     
+     // Only auto-center camera if user is not exploring the map
+     if (!_isUserExploringMap) {
+       _animateCameraToPosition(smoothed);
+     }
 
     if (_myCurrentRide != null && _myCurrentRide!.creatorId != FirebaseAuth.instance.currentUser?.uid) {
       final ride = _myCurrentRide!;
@@ -828,6 +849,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return byteData!.buffer.asUint8List();
   }
 
+  Future<Uint8List> _generateRiderDotImage() async {
+    const double imgSize = 100;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final center = Offset(imgSize / 2, imgSize / 2);
+    
+    // Outer Glow
+    final glowPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [Colors.cyanAccent.withValues(alpha: 0.8), Colors.cyanAccent.withValues(alpha: 0.0)],
+      ).createShader(Rect.fromCircle(center: center, radius: imgSize / 2));
+    canvas.drawCircle(center, imgSize / 2, glowPaint);
+    
+    // Core
+    canvas.drawCircle(center, imgSize * 0.2, Paint()..color = Colors.white);
+    
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(imgSize.toInt(), imgSize.toInt());
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
   // ---------------------------------------------------------------------------
   // REGISTER IMAGES ON MAP
   // ---------------------------------------------------------------------------
@@ -842,6 +885,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
       final passengerBytes = await _generatePassengerAvatarImage();
       await _mapController!.addImage('passenger-avatar', passengerBytes);
+
+      final riderDotBytes = await _generateRiderDotImage();
+      await _mapController!.addImage('rider-dot', riderDotBytes);
 
       _imagesRegistered = true;
       debugPrint('✅ Avatar + Portal + Passenger images registered');
@@ -1111,8 +1157,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final visibleIds = <String>{};
     for (final ride in _activeRides) {
       if (ride.isVisible || ride.status == 'full') {
-        // Don't show portal for the creator's own ride (they see it via Host panel later)
-        // Actually, show all portals so everyone can see them
+        // Show all portals so everyone can see them
         visibleIds.add(ride.id);
       }
     }
@@ -1133,7 +1178,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (!visibleIds.contains(ride.id)) continue;
 
       if (_portalSymbols.containsKey(ride.id)) {
-        // Symbol exists → update position (in case data changed)
+        // Symbol exists -> update position (in case data changed)
         try {
           await _mapController!.updateSymbol(
             _portalSymbols[ride.id]!,
@@ -1142,21 +1187,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           );
         } catch (e) {
-          debugPrint('⚠️ Failed to update portal ${ride.id}: $e');
+          debugPrint('⚠️ Failed to update portal : ');
         }
       } else {
-        // New ride → add symbol
+        // New ride -> add symbol
         try {
           final symbol = await _mapController!.addSymbol(SymbolOptions(
             geometry: LatLng(ride.lat, ride.lng),
             iconImage: 'portal-icon',
-            iconSize: 0.85, // INCREASED FROM 0.5
+            iconSize: 1.1, // Increased from 0.85 for better visibility
             iconAnchor: 'center',
           ));
           _portalSymbols[ride.id] = symbol;
-          debugPrint('🔮 Portal placed for ride ${ride.id} → ${ride.destination}');
+          debugPrint('🔮 Portal placed for ride  -> ');
         } catch (e) {
-          debugPrint('❌ Failed to add portal ${ride.id}: $e');
+          debugPrint('❌ Failed to add portal : ');
         }
       }
     }
@@ -1170,17 +1215,48 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     final now = DateTime.now();
     final canAnimate = _lastCameraAnimateTime == null ||
-        now.difference(_lastCameraAnimateTime!) >= _minAnimateInterval;
+        now.difference(_lastCameraAnimateTime!) >= _minAnimateInterval ||
+        _isArNavMode; // Always animate in AR Nav mode for smooth tracking
+
+    // Don't auto-animate if user is exploring the map
+    if (_isUserExploringMap && !_isArNavMode) {
+      return;
+    }
 
     if (canAnimate) {
-      _mapController!.animateCamera(
-        CameraUpdate.newCameraPosition(CameraPosition(
-          target: LatLng(pos.latitude, pos.longitude),
-          zoom: _currentZoom,
-          tilt: _is3DMode ? 60.0 : 0.0,
-        )),
-        duration: const Duration(milliseconds: 500),
-      );
+      _isProgrammaticCameraMove = true;
+
+      if (_isArNavMode) {
+        // Pokemon GO Mode: Lock camera to user position and device heading
+        _mapController!.animateCamera(
+          CameraUpdate.newCameraPosition(CameraPosition(
+            target: LatLng(pos.latitude, pos.longitude),
+            zoom: 19.5, // Closer for AR feel
+            tilt: 60.0,
+            bearing: pos.heading, // World rotates around user
+          )),
+          duration: const Duration(milliseconds: 600),
+        );
+
+        // Reset programmatic flag after animation
+        Future.delayed(const Duration(milliseconds: 650), () {
+          if (mounted) _isProgrammaticCameraMove = false;
+        });
+      } else {
+        _mapController!.animateCamera(
+          CameraUpdate.newCameraPosition(CameraPosition(
+            target: LatLng(pos.latitude, pos.longitude),
+            zoom: _currentZoom,
+            tilt: _is3DMode ? 60.0 : 0.0,
+          )),
+          duration: const Duration(milliseconds: 500),
+        );
+
+        // Reset programmatic flag after animation
+        Future.delayed(const Duration(milliseconds: 550), () {
+          if (mounted) _isProgrammaticCameraMove = false;
+        });
+      }
       _lastCameraAnimateTime = now;
     }
   }
@@ -1188,6 +1264,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _goToMyLocation() {
     if (_currentPosition == null || _mapController == null) return;
     _lastCameraAnimateTime = null;
+    // Disable explore mode when recentering
+    setState(() => _isUserExploringMap = false);
+    _exploreModeTimer?.cancel();
     _animateCameraToPosition(_currentPosition!);
   }
 
@@ -1212,35 +1291,99 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ---------------------------------------------------------------------------
   // MAP CALLBACKS
   // ---------------------------------------------------------------------------
-  void _onMapCreated(MapLibreMapController controller) async {
-    _mapController = controller;
-    _isMapReady = true;
-    _mapController!.onSymbolTapped.add(_onSymbolTapped);
-    debugPrint('✅ Map created');
+void _onMapCreated(MapLibreMapController controller) async {
+  _mapController = controller;
+  _isMapReady = true;
+  _mapController!.onSymbolTapped.add(_onSymbolTapped);
+  // Add camera move listener to detect when user is exploring
+  _mapController!.addListener(_onCameraMove);
+  debugPrint('✅ Map created');
 
-    await _registerMarkerImages();
-    await _updatePortalSymbols();
-    await _createAvatarSymbol();
-  }
+  await _registerMarkerImages();
+  await _updatePortalSymbols();
+  await _createAvatarSymbol();
+}
 
-  void _onStyleLoaded() {
-    debugPrint('✅ Map style loaded');
-    if (!_imagesRegistered) {
-      _registerMarkerImages().then((_) {
-        _createAvatarSymbol();
-        _updatePortalSymbols();
-      });
-    }
-    if (_pendingPortalUpdate) {
+void _onStyleLoaded() {
+  debugPrint('✅ Map style loaded');
+  if (!_imagesRegistered) {
+    _registerMarkerImages().then((_) {
+      _createAvatarSymbol();
       _updatePortalSymbols();
-    }
+    });
   }
+  if (_pendingPortalUpdate) {
+    _updatePortalSymbols();
+  }
+}
+
+// Add near other camera/map methods
+void _onCameraMove() {
+  // If the camera is moving due to our own code, ignore it
+  if (_isProgrammaticCameraMove) return;
+  
+  // User is manually moving the map, enable explore mode
+  if (!_isUserExploringMap) {
+    setState(() => _isUserExploringMap = true);
+    // Reset/cancel existing timer
+    _exploreModeTimer?.cancel();
+    // Start new timer to auto-disable explore mode after duration
+    _exploreModeTimer = Timer(_exploreModeDuration, () {
+      if (mounted) {
+        setState(() => _isUserExploringMap = false);
+      }
+    });
+  }
+}
+
+// Add explore mode indicator to UI
+Widget _buildExploreModeIndicator() {
+  if (!_isUserExploringMap) return const SizedBox.shrink();
+  
+  return Positioned(
+    top: MediaQuery.of(context).padding.top + 70, // Below top status bar
+    left: MediaQuery.of(context).size.width / 2 - 75, // Centered
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.greenAccent),
+        boxShadow: [
+          BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.2), blurRadius: 10)
+        ]
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.explore, color: Colors.greenAccent, size: 18),
+          const SizedBox(width: 8),
+          const Text(
+            'Exploring Map',
+            style: TextStyle(
+              color: Colors.greenAccent,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
   // ===========================================================================
   // PHASE 4: JOIN FLOW (Map Tap & Bottom Sheet)
   // ===========================================================================
 
   void _handleMapTap(LatLng tapLocation) {
+    if (_isArNavMode) {
+      _arNavMapTapNotifier.value = tapLocation;
+      // Reset after a tiny delay so the same coordinate can be tapped again if needed
+      Future.delayed(const Duration(milliseconds: 100), () => _arNavMapTapNotifier.value = null);
+      return;
+    }
+
     if (_activeRides.isEmpty) return;
 
     SharingPoint? closestRide;
@@ -1280,6 +1423,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         debugPrint('⚠️ Tapped portal ride data not found in _activeRides');
       }
       return;
+    }
+
+    // 1b. Check if tapped symbol belongs to a glowing dot (Corridor Rider)
+    final riderDotEntry = _riderDots.entries.where((e) => e.value.id == symbol.id).toList();
+    if (riderDotEntry.isNotEmpty) {
+       _arNavMapTapNotifier.value = riderDotEntry.first.value.options.geometry;
+       return;
     }
 
     // 2. Check if the tapped symbol belongs to a passenger
@@ -1390,7 +1540,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _showRatingDialog(String targetUid, String targetName, {bool isPassengerRatingHost = false, SharingPoint? rideToLeave}) {
-    int _rating = 0;
+    int ratingValue = 0;
     showDialog(
       context: context,
       builder: (ctx) {
@@ -1413,18 +1563,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       children: List.generate(5, (index) {
                         return IconButton(
                           icon: Icon(
-                            index < _rating ? Icons.star : Icons.star_border,
-                            color: index < _rating ? Colors.amber : Colors.white24, size: 40,
+                            index < ratingValue ? Icons.star : Icons.star_border,
+                            color: index < ratingValue ? Colors.amber : Colors.white24, size: 40,
                           ),
-                          onPressed: () => setDialogState(() => _rating = index + 1),
+                          onPressed: () => setDialogState(() => ratingValue = index + 1),
                         );
                       }),
                     ),
                     const SizedBox(height: 24),
                     ElevatedButton(
-                      onPressed: _rating > 0 ? () async {
+                      onPressed: ratingValue > 0 ? () async {
                         Navigator.pop(context);
-                        await _submitRating(targetUid, _rating);
+                        await _submitRating(targetUid, ratingValue);
                         if (isPassengerRatingHost && rideToLeave != null) {
                            _leaveRideAfterArrival(rideToLeave);
                         }
@@ -1507,92 +1657,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   // ===========================================================================
-  // PHASE 2: RIDE HOSTING
-  // ===========================================================================
-
-  Future<bool> _isAlreadyHosting() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
-    final query = await FirebaseFirestore.instance
-        .collection('sharing_points')
-        .where('creatorId', isEqualTo: user.uid)
-        .where('status', whereIn: ['active', 'full', 'ongoing'])
-        .get();
-    return query.docs.isNotEmpty;
-  }
-
-  Future<bool> _isAlreadyPassenger() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return false;
-    final query = await FirebaseFirestore.instance
-        .collection('sharing_points')
-        .where('passengers', arrayContains: user.uid)
-        .where('status', whereIn: ['active', 'full', 'ongoing'])
-        .get();
-    return query.docs.isNotEmpty;
-  }
-
-  void _showHostRideDialog() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _showSnackBar('Not authenticated. Please restart the app.', isError: true);
-      return;
-    }
-    if (_currentPosition == null) {
-      _showSnackBar('GPS not available. Cannot host a ride.', isError: true);
-      return;
-    }
-    if (_isCreatingRide) return;
-
-    final alreadyHosting = await _isAlreadyHosting();
-    if (alreadyHosting) {
-      _showSnackBar('You are already hosting a ride!', isError: true);
-      return;
-    }
-    final alreadyPassenger = await _isAlreadyPassenger();
-    if (alreadyPassenger) {
-      _showSnackBar('You are already in a ride. Leave it first.', isError: true);
-      return;
-    }
-
-    if (!mounted) return;
-
-    final result = await showDialog<Map<String, dynamic>>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => _HostRideDialog(),
-    );
-    if (result == null) return;
-
-    _isCreatingRide = true;
-    try {
-      final now = DateTime.now();
-      final waitMinutes = result['waitMinutes'] as int;
-      final expiresAt = now.add(Duration(minutes: waitMinutes));
-
-      final rideData = SharingPoint(
-        id: '', creatorId: user.uid,
-        lat: _currentPosition!.latitude, lng: _currentPosition!.longitude,
-        destination: result['destination'] as String,
-        seatsAvailable: result['seats'] as int,
-        totalSeats: result['seats'] as int,
-        status: 'active', createdAt: now, expiresAt: expiresAt,
-        passengers: [], arrivedPassengers: [],
-      );
-
-      await FirebaseFirestore.instance
-          .collection('sharing_points')
-          .add(rideData.toMap());
-
-      _showSnackBar('🎉 Ride created! Others can join for ${waitMinutes}min.');
-      debugPrint('✅ Ride created: ${result['destination']}');
-    } catch (e) {
-      debugPrint('❌ Failed to create ride: $e');
-      _showSnackBar('Failed to create ride: $e', isError: true);
-    } finally {
-      _isCreatingRide = false;
-    }
-  }
+  // PHASE 2:
 
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
@@ -1624,11 +1689,164 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ===========================================================================
 
   Future<void> _clearRoute() async {
+    for (final line in _glowLines) {
+      try { await _mapController?.removeLine(line); } catch (_) {}
+    }
+    _glowLines.clear();
+
+    if (_traveledLine != null && _mapController != null) {
+      try { await _mapController!.removeLine(_traveledLine!); } catch (_) {}
+      _traveledLine = null;
+    }
+    
     if (_routeLine != null && _mapController != null) {
-      try {
-        await _mapController!.removeLine(_routeLine!);
-      } catch (_) {}
+      try { await _mapController!.removeLine(_routeLine!); } catch (_) {}
       _routeLine = null;
+    }
+  }
+
+  Future<void> _updateSegmentedRoute(List<LatLng> fullPath, LatLng currentPos) async {
+    if (_mapController == null || fullPath.length < 2) return;
+
+    // Find nearest point index
+    int nearestIdx = 0;
+    double minDist = double.infinity;
+    for (int i = 0; i < fullPath.length; i++) {
+      final d = Geolocator.distanceBetween(currentPos.latitude, currentPos.longitude, fullPath[i].latitude, fullPath[i].longitude);
+      if (d < minDist) {
+        minDist = d;
+        nearestIdx = i;
+      }
+    }
+
+    final traveled = fullPath.sublist(0, nearestIdx + 1);
+    final remaining = fullPath.sublist(nearestIdx);
+
+    // Update Remaining (Neon Glow)
+    await _drawGlowingRoute(remaining);
+
+    // Update Traveled (Dimmed Dashed)
+    if (_traveledLine != null) {
+      try { await _mapController!.removeLine(_traveledLine!); } catch (_) {}
+    }
+    
+    _traveledLine = await _mapController!.addLine(LineOptions(
+      geometry: traveled,
+      lineColor: '#607D8B', // Blue grey (dimmed)
+      lineWidth: 2.0,
+      lineOpacity: 0.5,
+    ));
+  }
+
+  void _flyToStreetLevel(Position pos) {
+    if (_mapController == null) return;
+    _isOverviewMode = false;
+    _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(CameraPosition(
+        target: LatLng(pos.latitude, pos.longitude),
+        zoom: 18.5,
+        tilt: 60.0,
+        bearing: pos.heading,
+      )),
+      duration: const Duration(milliseconds: 1200),
+    );
+  }
+
+  Future<void> _drawGlowingRoute(List<LatLng> points) async {
+    if (_mapController == null) return;
+    await _clearRoute();
+
+    // 1. Broad Aura (Electric Cyan)
+    final aura = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#00E5FF',
+      lineWidth: 24.0,
+      lineOpacity: 0.1,
+      lineJoin: 'round',
+    ));
+    _glowLines.add(aura);
+
+    // 2. Main Glow
+    final glow = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#00E5FF',
+      lineWidth: 14.0,
+      lineOpacity: 0.3,
+      lineJoin: 'round',
+    ));
+    _glowLines.add(glow);
+
+    // 3. Inner Neon
+    final inner = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#00E5FF',
+      lineWidth: 8.0,
+      lineOpacity: 0.6,
+      lineJoin: 'round',
+    ));
+    _glowLines.add(inner);
+
+    // 4. Pure Core
+    _routeLine = await _mapController!.addLine(LineOptions(
+      geometry: points,
+      lineColor: '#FFFFFF',
+      lineWidth: 3.0,
+      lineOpacity: 1.0,
+      lineJoin: 'round',
+    ));
+  }
+
+  void _flyToRoute(List<LatLng> points) {
+    if (_mapController == null || points.isEmpty) return;
+    
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(southwest: LatLng(minLat, minLng), northeast: LatLng(maxLat, maxLng)),
+        top: 100, bottom: 250, left: 60, right: 60,
+      ),
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  Future<void> _updateRiderDots(List<CorridorRider> riders) async {
+    if (_mapController == null || !_imagesRegistered) return;
+
+    final incomingIds = riders.map((r) => r.userId).toSet();
+    final existingIds = _riderDots.keys.toSet();
+
+    // Remove old dots
+    final toRemove = existingIds.difference(incomingIds);
+    for (final id in toRemove) {
+      final sym = _riderDots.remove(id);
+      if (sym != null) await _mapController?.removeSymbol(sym);
+    }
+
+    // Add/Update dots
+    for (final rider in riders) {
+      if (_riderDots.containsKey(rider.userId)) {
+        await _mapController?.updateSymbol(_riderDots[rider.userId]!, SymbolOptions(
+          geometry: rider.position,
+        ));
+      } else {
+        final sym = await _mapController?.addSymbol(SymbolOptions(
+          geometry: rider.position,
+          iconImage: 'rider-dot',
+          iconSize: 0.6,
+        ));
+        if (sym != null) _riderDots[rider.userId] = sym;
+      }
     }
   }
 
@@ -1937,202 +2155,214 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    // Loading screen
-    if (_isLoading || _currentPosition == null || _mapStyleJson == null) {
-      return Scaffold(
-        backgroundColor: const Color(0xFF1A1A2E),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 120, height: 120,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      Colors.greenAccent.withValues(alpha: 0.8),
-                      Colors.greenAccent.withValues(alpha: 0.2),
-                      Colors.transparent,
+  // Loading screen
+  if (_isLoading || _currentPosition == null || _mapStyleJson == null) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 120, height: 120,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppColors.primary.withValues(alpha: 0.8),
+                    AppColors.primary.withValues(alpha: 0.2),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: const Center(
+                child: Icon(Icons.explore, size: 60, color: AppColors.primary),
+              ),
+            ),
+            const SizedBox(height: 30),
+            Text(
+              'GeoRide',
+              style: AppTypography.displayLarge.copyWith(
+                letterSpacing: 2,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _loadingMessage,
+              textAlign: TextAlign.center,
+              style: AppTypography.bodyMedium.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 24),
+            if (_isLoading)
+              SizedBox(
+                width: 40, height: 40,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary.withValues(alpha: 0.8)),
+                ),
+              ),
+            if (!_isLoading && _currentPosition == null) ...[
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () {
+                  setState(() { _isLoading = true; _loadingMessage = 'Retrying...'; });
+                  _initLocation();
+                },
+                icon: const Icon(Icons.refresh),
+                label: Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary, foregroundColor: Colors.black,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+     // Main map screen
+     return Scaffold(
+       body: Stack(
+         children: [
+           // ─── MAP ───────────────────────────────────────────────────
+           MapLibreMap(
+             styleString: _mapStyleJson!,
+             initialCameraPosition: CameraPosition(
+               target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+               zoom: _currentZoom,
+               tilt: _is3DMode ? 60.0 : 0.0,
+             ),
+             myLocationEnabled: false,
+             onMapCreated: _onMapCreated,
+             onStyleLoadedCallback: _onStyleLoaded,
+             onMapClick: (point, latlng) => _handleMapTap(latlng),
+             trackCameraPosition: true,
+             compassEnabled: false,
+             rotateGesturesEnabled: true,
+             tiltGesturesEnabled: true,
+           ),
+           
+           // ─── EXPLORE MODE INDICATOR ───────────────────────────────
+           if (!_isArNavMode) _buildExploreModeIndicator(),
+
+            // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
+            if (_myCurrentRide != null && !_isArNavMode)
+              _buildActiveRideHUD()
+            else if (!_isArNavMode)
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 8,
+                left: 16, right: 16,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: AppColors.primary.withValues(alpha: 0.3), width: 1),
+                  ),
+                  child: Row(
+                    children: [
+                      GestureDetector(
+                        onTap: _showProfileSheet,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: AppColors.primary.withValues(alpha: 0.2),
+                          ),
+                          child: const Icon(Icons.account_circle, color: AppColors.primary, size: 24),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'GeoRide',
+                        style: AppTypography.titleMedium.copyWith(
+                          color: AppColors.textPrimary,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                      const Spacer(),
+                      // Active rides count
+                      if (_activeRides.isNotEmpty) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.warning.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.local_taxi, color: AppColors.warning, size: 14),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${_activeRides.length}',
+                                style: TextStyle(color: AppColors.warning, fontSize: 12, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Icon(
+                        _is3DMode ? Icons.view_in_ar : Icons.map,
+                        color: AppColors.primary.withValues(alpha: 0.7), size: 18,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _is3DMode ? '3D' : '2D',
+                        style: TextStyle(color: AppColors.primary.withValues(alpha: 0.7), fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
                     ],
                   ),
                 ),
-                child: const Center(
-                  child: Icon(Icons.explore, size: 60, color: Colors.greenAccent),
-                ),
               ),
-              const SizedBox(height: 30),
-              const Text(
-                'GeoRide',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                _loadingMessage,
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: Colors.white.withValues(alpha: 0.7)),
-              ),
-              const SizedBox(height: 24),
-              if (_isLoading)
-                SizedBox(
-                  width: 40, height: 40,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.greenAccent.withValues(alpha: 0.8)),
-                  ),
-                ),
-              if (!_isLoading && _currentPosition == null) ...[
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    setState(() { _isLoading = true; _loadingMessage = 'Retrying...'; });
-                    _initLocation();
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Retry'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.greenAccent, foregroundColor: Colors.black,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      );
-    }
 
-    // Main map screen
-    return Scaffold(
-      body: Stack(
-        children: [
-          // ─── MAP ───────────────────────────────────────────────────
-          MapLibreMap(
-            styleString: _mapStyleJson!,
-            initialCameraPosition: CameraPosition(
-              target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-              zoom: _currentZoom,
-              tilt: _is3DMode ? 60.0 : 0.0,
-            ),
-            myLocationEnabled: false,
-            onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _onStyleLoaded,
-            onMapClick: (point, latlng) => _handleMapTap(latlng),
-            trackCameraPosition: true,
-            compassEnabled: false,
-            rotateGesturesEnabled: true,
-            tiltGesturesEnabled: true,
-          ),
-
-          // ─── TOP STATUS BAR OR HUD ─────────────────────────────────
-          if (_myCurrentRide != null)
-            _buildActiveRideHUD()
-          else
+            // ─── FABs (bottom-right) ───────────────────────────────────
+            if (!_isArNavMode)
             Positioned(
-              top: MediaQuery.of(context).padding.top + 8,
-            left: 16, right: 16,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.3), width: 1),
-              ),
-              child: Row(
+              right: 16,
+              bottom: _myCurrentRide != null ? 180 : 100,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  GestureDetector(
-                    onTap: _showProfileSheet,
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.greenAccent.withValues(alpha: 0.2),
-                      ),
-                      child: const Icon(Icons.account_circle, color: Colors.greenAccent, size: 24),
+                  if (_myCurrentRide == null) ...[
+                    // AR Navigation Mode FAB (serves as unified Create Ride flow)
+                    _buildFab(
+                      heroTag: 'ar_nav_mode',
+                      icon: Icons.near_me,
+                      tooltip: 'Start Journey',
+                      onPressed: () => setState(() => _isArNavMode = true),
+                      color: AppColors.accent1,
+                      mini: false,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'GeoRide',
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-                  ),
-                  const Spacer(),
-                  // Active rides count
-                  if (_activeRides.isNotEmpty) ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.orangeAccent.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.local_taxi, color: Colors.orangeAccent, size: 14),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${_activeRides.length}',
-                            style: const TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
+                    const SizedBox(height: 12),
                   ],
-                  Icon(
-                    _is3DMode ? Icons.view_in_ar : Icons.map,
-                    color: Colors.greenAccent.withValues(alpha: 0.7), size: 18,
+                  // 3D/2D toggle
+                  _buildFab(
+                    heroTag: 'toggle_3d',
+                    icon: _is3DMode ? Icons.layers : Icons.map,
+                    tooltip: _is3DMode ? 'Switch to 2D' : 'Switch to 3D',
+                    onPressed: _toggle3DMode,
+                    color: AppColors.primary,
                   ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _is3DMode ? '3D' : '2D',
-                    style: TextStyle(color: Colors.greenAccent.withValues(alpha: 0.7), fontSize: 12, fontWeight: FontWeight.w600),
+                  const SizedBox(height: 12),
+                   // My Location
+                  _buildFab(
+                    heroTag: 'my_location',
+                    icon: _isUserExploringMap ? Icons.my_location : Icons.my_location_outlined,
+                    tooltip: 'My Location',
+                    onPressed: _goToMyLocation,
+                    color: _isUserExploringMap ? AppColors.primary : AppColors.accent1,
                   ),
                 ],
               ),
             ),
-          ),
-
-          // ─── FABs (bottom-right) ───────────────────────────────────
-          Positioned(
-            right: 16,
-            bottom: _myCurrentRide != null ? 180 : 100,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_myCurrentRide == null) ...[
-                  // Host Ride FAB
-                  _buildFab(
-                  heroTag: 'host_ride',
-                  icon: Icons.add_location_alt,
-                  tooltip: 'Host Ride',
-                  onPressed: _showHostRideDialog,
-                  color: Colors.orangeAccent,
-                  mini: false,
-                ),
-                const SizedBox(height: 12),
-                ],
-                // 3D/2D toggle
-                _buildFab(
-                  heroTag: 'toggle_3d',
-                  icon: _is3DMode ? Icons.layers : Icons.map,
-                  tooltip: _is3DMode ? 'Switch to 2D' : 'Switch to 3D',
-                  onPressed: _toggle3DMode,
-                  color: Colors.greenAccent,
-                ),
-                const SizedBox(height: 12),
-                // My Location
-                _buildFab(
-                  heroTag: 'my_location',
-                  icon: Icons.my_location,
-                  tooltip: 'My Location',
-                  onPressed: _goToMyLocation,
-                  color: Colors.cyanAccent,
-                ),
-              ],
-            ),
-          ),
 
           // ─── GPS COORDS (debug) ────────────────────────────────────
+          if (!_isArNavMode)
           Positioned(
             bottom: 24, left: 16,
             child: Container(
@@ -2153,12 +2383,37 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           ),
 
           // ─── ACTIVE RIDE BOTTOM PANEL ──────────────────────────────
-          if (_myCurrentRide != null)
+          if (_myCurrentRide != null && !_isArNavMode)
             _buildActiveRideBottomPanel(),
 
           // ─── PHASE 10: SYNCHRONOUS RATING ──────────────────────────
           if (_myCurrentRide != null && _myCurrentRide!.status == 'rating_phase')
             _buildSynchronousRatingOverlay(),
+
+          // ─── AR NAVIGATION OVERLAY (New Mode) ──────────────────────
+          if (_isArNavMode)
+            ArNavigationOverlay(
+              mapController: _mapController,
+              positionStream: _positionStreamController.stream,
+              initialPosition: _currentPosition!,
+              mapTapNotifier: _arNavMapTapNotifier,
+              onExit: () => setState(() => _isArNavMode = false),
+              onRouteFetched: (points) {
+                _drawGlowingRoute(points);
+                _flyToRoute(points);
+              },
+              onNearbyRidersUpdated: (riders) => _updateRiderDots(riders),
+              onNavigationStarted: (pos) => _flyToStreetLevel(pos),
+              onUpdateSegmentedPath: (points, pos) => _updateSegmentedRoute(points, pos),
+              onToggleOverview: (points) {
+                 if (_isOverviewMode) {
+                   _flyToStreetLevel(_currentPosition!);
+                 } else {
+                   _isOverviewMode = true;
+                   _flyToRoute(points);
+                 }
+              },
+            ),
         ],
       ),
     );
@@ -2175,7 +2430,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
       child: FloatingActionButton(
         heroTag: heroTag, mini: mini,
-        backgroundColor: mini ? Colors.black.withValues(alpha: 0.7) : color,
+        backgroundColor: mini ? AppColors.surface.withValues(alpha: 0.7) : color,
         foregroundColor: mini ? color : Colors.white,
         elevation: 0, onPressed: onPressed, tooltip: tooltip,
         child: Icon(icon, size: mini ? 20 : 26),
@@ -2255,190 +2510,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _ChatModalSheet(rideId: _myCurrentRide!.id),
-    );
-  }
-}
-
-// =============================================================================
-// HOST RIDE DIALOG
-// =============================================================================
-
-class _HostRideDialog extends StatefulWidget {
-  @override
-  State<_HostRideDialog> createState() => _HostRideDialogState();
-}
-
-class _HostRideDialogState extends State<_HostRideDialog> {
-  final _destinationController = TextEditingController();
-  int _selectedSeats = 2;
-  int _selectedWaitMinutes = 30;
-  final List<int> _seatOptions = [1, 2, 3, 4, 5, 6];
-  final List<int> _waitOptions = [15, 30, 45, 60];
-
-  @override
-  void dispose() {
-    _destinationController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1A1A2E),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.4), width: 1.5),
-          boxShadow: [BoxShadow(color: Colors.orangeAccent.withValues(alpha: 0.15), blurRadius: 30, spreadRadius: 5)],
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.orangeAccent.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(Icons.add_location_alt, color: Colors.orangeAccent, size: 24),
-                  ),
-                  const SizedBox(width: 12),
-                  const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Host a Ride', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                      Text('Share your ride with others', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-
-              // Destination
-              const Text('DESTINATION', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _destinationController,
-                style: const TextStyle(color: Colors.white, fontSize: 16),
-                decoration: InputDecoration(
-                  hintText: 'Where are you going?',
-                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
-                  prefixIcon: Icon(Icons.place, color: Colors.orangeAccent.withValues(alpha: 0.6)),
-                  filled: true, fillColor: Colors.white.withValues(alpha: 0.07),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.orangeAccent, width: 1.5)),
-                ),
-                textCapitalization: TextCapitalization.words,
-              ),
-              const SizedBox(height: 20),
-
-              // Seats
-              const Text('SEATS AVAILABLE', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-              const SizedBox(height: 10),
-              Row(
-                children: _seatOptions.map((seats) {
-                  final isSelected = _selectedSeats == seats;
-                  return Expanded(
-                    child: GestureDetector(
-                      onTap: () => setState(() => _selectedSeats = seats),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: isSelected ? Colors.orangeAccent : Colors.white.withValues(alpha: 0.07),
-                          borderRadius: BorderRadius.circular(10),
-                          border: isSelected ? null : Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                        child: Center(
-                          child: Text('$seats', style: TextStyle(color: isSelected ? Colors.black : Colors.white70, fontSize: 16, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 20),
-
-              // Wait Time
-              const Text('WAIT TIME', style: TextStyle(color: Colors.orangeAccent, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-              const SizedBox(height: 10),
-              Row(
-                children: _waitOptions.map((mins) {
-                  final isSelected = _selectedWaitMinutes == mins;
-                  return Expanded(
-                    child: GestureDetector(
-                      onTap: () => setState(() => _selectedWaitMinutes = mins),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: isSelected ? Colors.orangeAccent : Colors.white.withValues(alpha: 0.07),
-                          borderRadius: BorderRadius.circular(10),
-                          border: isSelected ? null : Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                        child: Center(
-                          child: Text('${mins}m', style: TextStyle(color: isSelected ? Colors.black : Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 28),
-
-              // Buttons
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(null),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white54,
-                        side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      child: const Text('Cancel'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 2,
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        final dest = _destinationController.text.trim();
-                        if (dest.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Please enter a destination'), backgroundColor: Colors.red),
-                          );
-                          return;
-                        }
-                        Navigator.of(context).pop({
-                          'destination': dest, 'seats': _selectedSeats, 'waitMinutes': _selectedWaitMinutes,
-                        });
-                      },
-                      icon: const Icon(Icons.rocket_launch, size: 18),
-                      label: const Text('Create Ride', style: TextStyle(fontWeight: FontWeight.bold)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orangeAccent, foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
@@ -2802,7 +2873,7 @@ class _PassengerRatingHostForm extends StatefulWidget {
 }
 
 class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
-  int _rating = 0;
+  int ratingValue = 0;
   bool _isSaving = false;
 
   @override
@@ -2822,14 +2893,14 @@ class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
            mainAxisAlignment: MainAxisAlignment.center,
            children: List.generate(5, (index) {
               return IconButton(
-                 icon: Icon(index < _rating ? Icons.star : Icons.star_border, color: index < _rating ? Colors.amber : Colors.white24, size: 40),
-                 onPressed: () => setState(() => _rating = index + 1),
+                 icon: Icon(index < ratingValue ? Icons.star : Icons.star_border, color: index < ratingValue ? Colors.amber : Colors.white24, size: 40),
+                 onPressed: () => setState(() => ratingValue = index + 1),
               );
            }),
         ),
         const SizedBox(height: 24),
         ElevatedButton.icon(
-           onPressed: _rating > 0 ? () async {
+           onPressed: ratingValue > 0 ? () async {
               setState(() => _isSaving = true);
               try {
                 // Submit rating to host
@@ -2837,15 +2908,15 @@ class _PassengerRatingHostFormState extends State<_PassengerRatingHostForm> {
                 await FirebaseFirestore.instance.runTransaction((transaction) async {
                   final snapshot = await transaction.get(docRef);
                   if (!snapshot.exists) {
-                    transaction.set(docRef, {'displayName': 'Host', 'safetyRating': _rating.toDouble(), 'ratingCount': 1, 'ratingSum': _rating});
+                    transaction.set(docRef, {'displayName': 'Host', 'safetyRating': ratingValue.toDouble(), 'ratingCount': 1, 'ratingSum': ratingValue});
                   } else {
                     final data = snapshot.data()!;
                     final count = (data['ratingCount'] as num?)?.toInt() ?? 0;
                     final sum = (data['ratingSum'] as num?)?.toInt() ?? 0;
                     transaction.update(docRef, {
                       'ratingCount': count + 1,
-                      'ratingSum': sum + _rating,
-                      'safetyRating': (sum + _rating) / (count + 1),
+                      'ratingSum': sum + ratingValue,
+                      'safetyRating': (sum + ratingValue) / (count + 1),
                     });
                   }
                 });
