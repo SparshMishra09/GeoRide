@@ -427,6 +427,34 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Timer? _exploreTimer;
   bool _isProgrammaticCameraMove = false; // prevents explore mode during auto-follow
 
+  // ---------------------------------------------------------------------------
+  // Phase 14: Solo Trip Mode
+  // ---------------------------------------------------------------------------
+  bool _isTripModeActive = false;
+  LatLng? _tripDestination;
+  String _tripDestinationName = '';
+  final List<Line> _tripSegmentLines = []; // one Line per traffic-colored segment
+  Timer? _tripRerouteTimer;
+  bool _isDrawingTrip = false;
+
+  // ---------------------------------------------------------------------------
+  // Phase 16: Smooth Avatar Animation
+  // ---------------------------------------------------------------------------
+  LatLng? _avatarCurrentLatLng;
+  LatLng? _avatarTargetLatLng;
+  AnimationController? _avatarAnimController;
+  Animation<double>? _avatarAnim;
+
+  // ---------------------------------------------------------------------------
+  // Phase 17: Weather & AQI Overlay
+  // ---------------------------------------------------------------------------
+  int? _currentAqi;
+  double? _currentTempC;
+  int? _weatherCode;
+  double? _humidity;
+  Timer? _weatherTimer;
+  bool _showTemperature = false;
+
   @override
   void initState() {
     super.initState();
@@ -434,6 +462,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initLocation();
     _startRidesStream();
     _startExpiryTimer();
+    // Phase 17: start weather/AQI after a small delay so location is ready
+    Future.delayed(const Duration(seconds: 3), _initWeatherAndAqi);
   }
 
   @override
@@ -443,6 +473,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _passengerLocationsSub?.cancel();
     _expiryTimer?.cancel();
     _exploreTimer?.cancel();
+    _tripRerouteTimer?.cancel();
+    _weatherTimer?.cancel();
+    _avatarAnimController?.dispose();
     if (_mapController != null) {
       _mapController!.onSymbolTapped.remove(_onSymbolTapped);
     }
@@ -911,16 +944,53 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _updateAvatarPosition(Position pos) async {
-    if (_mapController == null || _avatarSymbol == null) return;
-    try {
-      await _mapController!.updateSymbol(
-        _avatarSymbol!,
-        SymbolOptions(geometry: LatLng(pos.latitude, pos.longitude)),
-      );
-    } catch (e) {
-      debugPrint('âš ï¸ Failed to update avatar position: $e');
+  // Phase 16: Smooth avatar glide — lerps from current position to new target
+  void _updateAvatarPosition(Position pos) {
+    final target = LatLng(pos.latitude, pos.longitude);
+    if (_mapController == null || _avatarSymbol == null) {
+      _avatarCurrentLatLng = target;
+      return;
     }
+
+    if (_avatarCurrentLatLng == null) {
+      _avatarCurrentLatLng = target;
+      _mapController!.updateSymbol(_avatarSymbol!, SymbolOptions(geometry: target));
+      return;
+    }
+
+    _avatarTargetLatLng = target;
+
+    _avatarAnimController?.stop();
+    _avatarAnimController?.dispose();
+
+    final startLatLng = _avatarCurrentLatLng!;
+
+    _avatarAnimController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+    _avatarAnim = CurvedAnimation(
+      parent: _avatarAnimController!,
+      curve: Curves.easeInOut,
+    );
+
+    _avatarAnimController!.addListener(() {
+      final t = _avatarAnim!.value;
+      final lerpLat = startLatLng.latitude + (target.latitude - startLatLng.latitude) * t;
+      final lerpLng = startLatLng.longitude + (target.longitude - startLatLng.longitude) * t;
+      final lerpLatLng = LatLng(lerpLat, lerpLng);
+      _mapController?.updateSymbol(_avatarSymbol!, SymbolOptions(geometry: lerpLatLng));
+    });
+
+    _avatarAnimController!.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _avatarCurrentLatLng = target;
+        _avatarAnimController?.dispose();
+        _avatarAnimController = null;
+      }
+    });
+
+    _avatarAnimController!.forward();
   }
 
   // ===========================================================================
@@ -1680,6 +1750,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
+  void _showTripDialog() async {
+    final currentLatLng = _currentPosition != null
+        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+        : null;
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _TripDialog(currentPos: currentLatLng),
+    );
+    if (result == null) return;
+
+    final toLat = result['toLat'] as double?;
+    final toLng = result['toLng'] as double?;
+    final toName = result['toName'] as String? ?? 'Destination';
+
+    if (toLat != null && toLng != null) {
+      _startTripMode(LatLng(toLat, toLng), toName);
+    }
+  }
+
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -2173,6 +2264,230 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
+  // ===========================================================================
+  // PHASE 17: WEATHER & AQI
+  // ===========================================================================
+  void _initWeatherAndAqi() {
+    _fetchWeatherAndAqi();
+    _weatherTimer = Timer.periodic(const Duration(minutes: 10), (_) => _fetchWeatherAndAqi());
+  }
+
+  Future<void> _fetchWeatherAndAqi() async {
+    if (_currentPosition == null) return;
+    try {
+      final lat = _currentPosition!.latitude.toStringAsFixed(4);
+      final lng = _currentPosition!.longitude.toStringAsFixed(4);
+      
+      final url = Uri.parse('https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lng&current=temperature_2m,relative_humidity_2m,weather_code&hourly=pm2_5');
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (mounted) {
+          setState(() {
+            _currentTempC = data['current']['temperature_2m'];
+            _humidity = data['current']['relative_humidity_2m'];
+            _weatherCode = data['current']['weather_code'];
+            
+            // Simple AQI proxy using PM2.5 (from hourly array, just grab first for demo)
+            final pm25 = data['hourly']['pm2_5']?[0] ?? 0.0;
+            _currentAqi = pm25.toInt();
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Phase 17 Weather fetch error: $e");
+    }
+  }
+
+  Widget _buildWeatherAqiWidget() {
+    if (_currentTempC == null) return const SizedBox.shrink();
+    
+    IconData weatherIcon = Icons.wb_sunny;
+    Color weatherColor = Colors.orangeAccent;
+    if (_weatherCode != null) {
+      if (_weatherCode! >= 50 && _weatherCode! <= 69) {
+        weatherIcon = Icons.water_drop;
+        weatherColor = Colors.lightBlueAccent;
+      } else if (_weatherCode! >= 70 && _weatherCode! <= 79) {
+        weatherIcon = Icons.ac_unit;
+        weatherColor = Colors.white;
+      } else if (_weatherCode! >= 95) {
+        weatherIcon = Icons.flash_on;
+        weatherColor = Colors.yellow;
+      } else if (_weatherCode! >= 1 && _weatherCode! <= 3) {
+        weatherIcon = Icons.cloud;
+        weatherColor = Colors.grey;
+      }
+    }
+
+    Color aqiColor = Colors.greenAccent;
+    if (_currentAqi! > 50) aqiColor = Colors.yellowAccent;
+    if (_currentAqi! > 100) aqiColor = Colors.orangeAccent;
+    if (_currentAqi! > 150) aqiColor = Colors.redAccent;
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 80,
+      right: 16,
+      child: GestureDetector(
+        onTap: () => setState(() => _showTemperature = !_showTemperature),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A2E).withValues(alpha: 0.8),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+            boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 10)],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(weatherIcon, color: weatherColor, size: 20),
+              if (_showTemperature) ...[
+                const SizedBox(width: 8),
+                Text('${_currentTempC?.toStringAsFixed(1)}°C', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 8),
+                const Icon(Icons.water_drop_outlined, color: Colors.blueAccent, size: 16),
+                Text('${_humidity?.toInt()}%', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+              ],
+              const SizedBox(width: 12),
+              Container(width: 1, height: 20, color: Colors.white24),
+              const SizedBox(width: 12),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Text('AQI', style: TextStyle(color: Colors.white54, fontSize: 10)),
+                  Text('$_currentAqi', style: TextStyle(color: aqiColor, fontWeight: FontWeight.bold)),
+                ],
+              )
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // PHASE 14 & 15: TRIP MODE & TRAFFIC ROUTING
+  // ===========================================================================
+  void _startTripMode(LatLng destination, String name) {
+    setState(() {
+      _isTripModeActive = true;
+      _tripDestination = destination;
+      _tripDestinationName = name;
+    });
+    
+    // Clear any existing ride stuff just in case
+    _clearGlowingPath();
+    _clearRoute();
+    
+    // Fetch traffic route
+    _fetchTrafficRoute();
+    
+    // Start auto-rerouting every 10 seconds (Phase 15 requirement)
+    _tripRerouteTimer?.cancel();
+    _tripRerouteTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (_isTripModeActive && !_isDrawingTrip) {
+        _fetchTrafficRoute();
+      }
+    });
+  }
+
+  void _cancelTripMode() {
+    setState(() {
+      _isTripModeActive = false;
+      _tripDestination = null;
+      _tripDestinationName = '';
+    });
+    _tripRerouteTimer?.cancel();
+    _clearTrafficRoute();
+  }
+
+  Future<void> _clearTrafficRoute() async {
+    if (_mapController == null) return;
+    for (final line in _tripSegmentLines) {
+      await _mapController!.removeLine(line);
+    }
+    _tripSegmentLines.clear();
+  }
+
+  Future<void> _fetchTrafficRoute() async {
+    if (_currentPosition == null || _mapController == null || _tripDestination == null) return;
+    _isDrawingTrip = true;
+
+    try {
+      final startLng = _currentPosition!.longitude.toStringAsFixed(6);
+      final startLat = _currentPosition!.latitude.toStringAsFixed(6);
+      final endLng = _tripDestination!.longitude.toStringAsFixed(6);
+      final endLat = _tripDestination!.latitude.toStringAsFixed(6);
+
+      // Using speed annotations to fake traffic
+      final url = 'https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&annotations=speed';
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['routes'] != null && data['routes'].isNotEmpty) {
+          final route = data['routes'][0];
+          final geometry = route['geometry']['coordinates'] as List;
+          final annotations = route['legs'][0]['annotation']['speed'] as List?;
+          
+          await _drawTrafficRoute(geometry, annotations);
+        }
+      }
+    } catch (e) {
+      debugPrint("Traffic Route fetch error: $e");
+    } finally {
+      _isDrawingTrip = false;
+    }
+  }
+
+  Future<void> _drawTrafficRoute(List geometry, List? speeds) async {
+    if (_mapController == null) return;
+    
+    // First remove old lines
+    await _clearTrafficRoute();
+    
+    // Draw segments. If speed is high -> blue, medium -> orange, low -> red
+    List<LatLng> currentSegment = [];
+    Color currentColor = Colors.blueAccent;
+    
+    for (int i = 0; i < geometry.length; i++) {
+      final coord = geometry[i];
+      currentSegment.add(LatLng(coord[1], coord[0]));
+      
+      if (i < geometry.length - 1 && speeds != null && i < speeds.length) {
+        final speed = (speeds[i] as num).toDouble();
+        Color nextColor;
+        if (speed < 5.0) { // < 18 km/h -> heavy traffic
+          nextColor = Colors.redAccent;
+        } else if (speed < 11.0) { // < 40 km/h -> medium traffic
+          nextColor = Colors.orangeAccent;
+        } else {
+          nextColor = Colors.blueAccent;
+        }
+        
+        // If color changes or it's the last segment, flush the current segment
+        if (nextColor != currentColor || i == geometry.length - 2) {
+          if (currentSegment.length > 1) {
+            final line = await _mapController!.addLine(LineOptions(
+              geometry: List.from(currentSegment),
+              lineColor: '#${currentColor.value.toRadixString(16).substring(2, 8)}',
+              lineWidth: 6.0,
+              lineOpacity: 0.9,
+            ));
+            _tripSegmentLines.add(line);
+          }
+          // Start next segment with the last point to connect them
+          currentSegment = [LatLng(coord[1], coord[0])];
+          currentColor = nextColor;
+        }
+      }
+    }
+  }
+
   Widget _buildActiveRideHUD() {
     final isHost = _myCurrentRide!.creatorId == FirebaseAuth.instance.currentUser?.uid;
     
@@ -2544,17 +2859,37 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (_myCurrentRide == null) ...[
+                if (_myCurrentRide == null && !_isTripModeActive) ...[
                   // Host Ride FAB
                   _buildFab(
-                  heroTag: 'host_ride',
-                  icon: Icons.add_location_alt,
-                  tooltip: 'Host Ride',
-                  onPressed: _showHostRideDialog,
-                  color: Colors.orangeAccent,
-                  mini: false,
-                ),
-                const SizedBox(height: 12),
+                    heroTag: 'host_ride',
+                    icon: Icons.add_location_alt,
+                    tooltip: 'Host Ride',
+                    onPressed: _showHostRideDialog,
+                    color: Colors.orangeAccent,
+                    mini: false,
+                  ),
+                  const SizedBox(height: 12),
+                  // Solo Trip FAB
+                  _buildFab(
+                    heroTag: 'trip_mode',
+                    icon: Icons.directions,
+                    tooltip: 'Start Trip',
+                    onPressed: _showTripDialog,
+                    color: Colors.deepPurpleAccent,
+                    mini: false,
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (_isTripModeActive) ...[
+                  _buildFab(
+                    heroTag: 'end_trip',
+                    icon: Icons.close,
+                    tooltip: 'End Trip',
+                    onPressed: _cancelTripMode,
+                    color: Colors.redAccent,
+                  ),
+                  const SizedBox(height: 12),
                 ],
                 // 3D/2D toggle
                 _buildFab(
@@ -3067,6 +3402,308 @@ class _HostRideDialogState extends State<_HostRideDialog> {
       'toLng': _toCoords!.longitude,
       'seats': _selectedSeats,
       'waitMinutes': _selectedWaitMinutes,
+    });
+  }
+
+  void _showError(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.redAccent));
+  }
+}
+
+// =============================================================================
+// TRIP DIALOG (SOLO NAVIGATION)
+// =============================================================================
+
+class _TripDialog extends StatefulWidget {
+  final LatLng? currentPos;
+  const _TripDialog({this.currentPos});
+
+  @override
+  State<_TripDialog> createState() => _TripDialogState();
+}
+
+class _TripDialogState extends State<_TripDialog> {
+  final _fromController = TextEditingController();
+  final _toController = TextEditingController();
+
+  LatLng? _fromCoords;
+  LatLng? _toCoords;
+  List<dynamic> _fromSuggestions = [];
+  List<dynamic> _toSuggestions = [];
+  Timer? _debounce;
+  bool _isLoadingFrom = false;
+  bool _isLoadingTo = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.currentPos != null) {
+      _fromController.text = "Current Location";
+      _fromCoords = widget.currentPos;
+    }
+  }
+
+  @override
+  void dispose() {
+    _fromController.dispose();
+    _toController.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _fetchSuggestions(String query, bool isFrom) async {
+    if (query.length < 3) {
+      setState(() {
+        if (isFrom) _fromSuggestions = [];
+        else _toSuggestions = [];
+      });
+      return;
+    }
+
+    setState(() {
+      if (isFrom) _isLoadingFrom = true;
+      else _isLoadingTo = true;
+    });
+
+    try {
+      final url = Uri.parse('https://nominatim.openstreetmap.org/search?q=$query&format=json&limit=5&addressdetails=1');
+      final response = await http.get(url, headers: {'User-Agent': 'GeoRideApp'});
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        setState(() {
+          if (isFrom) _fromSuggestions = data;
+          else _toSuggestions = data;
+        });
+      }
+    } catch (e) {
+      debugPrint('Geocoding error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          if (isFrom) _isLoadingFrom = false;
+          else _isLoadingTo = false;
+        });
+      }
+    }
+  }
+
+  void _onSearchChanged(String query, bool isFrom) {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      _fetchSuggestions(query, isFrom);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1A2E),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3), width: 1.5),
+          boxShadow: [BoxShadow(color: Colors.deepPurpleAccent.withValues(alpha: 0.1), blurRadius: 40, spreadRadius: 5)],
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.directions, color: Colors.deepPurpleAccent, size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Start a Trip', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                      Text('Navigate to your destination', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // FROM Field
+              _buildLocationField(
+                label: 'FROM',
+                controller: _fromController,
+                hint: 'Starting point...',
+                icon: Icons.my_location,
+                isFrom: true,
+                isLoading: _isLoadingFrom,
+                suggestions: _fromSuggestions,
+                onSelected: (item) {
+                  setState(() {
+                    _fromController.text = item['display_name'];
+                    _fromCoords = LatLng(double.parse(item['lat']), double.parse(item['lon']));
+                    _fromSuggestions = [];
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // TO Field
+              _buildLocationField(
+                label: 'TO (DESTINATION)',
+                controller: _toController,
+                hint: 'Where are you going?',
+                icon: Icons.place,
+                isFrom: false,
+                isLoading: _isLoadingTo,
+                suggestions: _toSuggestions,
+                onSelected: (item) {
+                  setState(() {
+                    _toController.text = item['display_name'];
+                    _toCoords = LatLng(double.parse(item['lat']), double.parse(item['lon']));
+                    _toSuggestions = [];
+                  });
+                },
+              ),
+              const SizedBox(height: 32),
+
+              // Action Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                      child: const Text('Cancel', style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _submit,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.deepPurpleAccent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                      child: const Text('Start Trip', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocationField({
+    required String label,
+    required TextEditingController controller,
+    required String hint,
+    required IconData icon,
+    required bool isFrom,
+    required bool isLoading,
+    required List<dynamic> suggestions,
+    required Function(dynamic) onSelected,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+          ),
+          child: Column(
+            children: [
+              TextField(
+                controller: controller,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: hint,
+                  hintStyle: const TextStyle(color: Colors.white30),
+                  prefixIcon: Icon(icon, color: Colors.deepPurpleAccent.withValues(alpha: 0.7)),
+                  suffixIcon: isLoading
+                      ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.deepPurpleAccent))))
+                      : isFrom
+                          ? IconButton(
+                              icon: const Icon(Icons.my_location, color: Colors.white54, size: 20),
+                              onPressed: () {
+                                if (widget.currentPos != null) {
+                                  setState(() {
+                                    controller.text = "Current Location";
+                                    _fromCoords = widget.currentPos;
+                                    _fromSuggestions = [];
+                                  });
+                                }
+                              },
+                            )
+                          : null,
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                ),
+                onChanged: (val) => _onSearchChanged(val, isFrom),
+              ),
+              if (suggestions.isNotEmpty)
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 150),
+                  decoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+                  ),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: suggestions.length,
+                    itemBuilder: (ctx, i) {
+                      final item = suggestions[i];
+                      return ListTile(
+                        leading: const Icon(Icons.location_on, color: Colors.white54, size: 16),
+                        title: Text(item['display_name'], style: const TextStyle(color: Colors.white, fontSize: 12), maxLines: 2, overflow: TextOverflow.ellipsis),
+                        onTap: () => onSelected(item),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _submit() {
+    if (_fromCoords == null || _fromController.text.isEmpty) {
+      _showError('Please select a valid starting point');
+      return;
+    }
+    if (_toCoords == null || _toController.text.isEmpty) {
+      _showError('Please select a valid destination');
+      return;
+    }
+
+    Navigator.of(context).pop({
+      'fromName': _fromController.text,
+      'fromLat': _fromCoords!.latitude,
+      'fromLng': _fromCoords!.longitude,
+      'toName': _toController.text,
+      'toLat': _toCoords!.latitude,
+      'toLng': _toCoords!.longitude,
     });
   }
 
