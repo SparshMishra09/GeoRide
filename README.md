@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons/app_icon.png" width="128" height="128" alt="GeoRide Logo" />
+  <img src="docs/screenshots/logo.png" width="128" height="128" alt="GeoRide Logo" />
 </p>
 
 <h1 align="center">GeoRide</h1>
@@ -126,10 +126,10 @@ GeoRide/
 │       ├── auth_screen.dart       # Login / signup / password reset
 │       └── home_screen.dart       # Map, portals, hosting, navigation, chat
 │
-├── assets/
-│   ├── icons/
-│   │   └── app_icon.png           # App launcher icon
-│   └── style.json                 # MapLibre GL style config
+│   ├── assets/
+│   │   ├── icons/
+│   │   │   └── app_icon.png           # App launcher icon
+│   │   └── style.json                 # MapLibre GL style config
 │
 ├── docs/
 │   └── screenshots/               # App screenshots for README
@@ -226,6 +226,6 @@ This project is proprietary software. All rights reserved.
 ---
 
 <p align="center">
-  <img src="assets/icons/app_icon.png" width="64" height="64" alt="GeoRide" />
+  <img src="docs/screenshots/logo.png" width="64" height="64" alt="GeoRide" />
 </p>
 <p align="center"><em>Share the ride. Share the adventure.</em></p>
